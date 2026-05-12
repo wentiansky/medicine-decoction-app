@@ -1,0 +1,1216 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { StatusBar } from 'expo-status-bar'
+import {
+  StyleSheet,
+  View,
+  ScrollView,
+  Alert,
+  Platform,
+  AppState,
+  NativeModules,
+  ToastAndroid
+} from 'react-native'
+import {
+  PaperProvider,
+  Text,
+  Button,
+  Card,
+  Appbar,
+  TextInput,
+  Modal,
+  Portal
+} from 'react-native-paper'
+import AsyncStorage from '@react-native-async-storage/async-storage'
+import { SafeAreaProvider } from 'react-native-safe-area-context'
+import LogScreen from './src/LogScreen'
+const { createAppLogger } = require('./src/appLogger')
+const {
+  DEFAULT_SETTINGS,
+  NATIVE_ALARM_REQUEST_CODE,
+  NOTIFICATION_CHANNEL_ID,
+  buildPhases,
+  completePhase,
+  createAndroidAlarmPermissionChecklist,
+  createNativeAlarmRequest,
+  createPermissionGuideState,
+  createPhaseNotificationRequest,
+  getCompletionMessage,
+  getPhaseDisplaySeconds,
+  getPhaseDurationSeconds,
+  getPhaseInfo,
+  getPermissionIssueGuide,
+  isFlowComplete,
+  normalizeSettings,
+  shouldShowInAppFallbackAlert,
+  shouldSchedulePhaseReminder
+} = require('./src/timerCore')
+
+export default function App() {
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS)
+  const [tempSettings, setTempSettings] = useState(settings)
+  const [isRunning, setIsRunning] = useState(false)
+  const [isWaitingForContinue, setIsWaitingForContinue] = useState(false)
+  const [currentPhase, setCurrentPhase] = useState(1) // 1-7 phases
+  const [timeLeft, setTimeLeft] = useState(0)
+  const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [showLogScreen, setShowLogScreen] = useState(false)
+  const [notificationSupported, setNotificationSupported] = useState(false)
+  const [alarmPermissionIssues, setAlarmPermissionIssues] = useState([])
+  const [showPermissionGuide, setShowPermissionGuide] = useState(false)
+  const [permissionGuideDismissed, setPermissionGuideDismissed] = useState(false)
+  const timerRef = useRef(null)
+  const appLoggerRef = useRef(null)
+  const notificationsRef = useRef(null)
+  const scheduledNotificationId = useRef(null)
+  const scheduledPhaseRef = useRef(null)
+  const phaseDeadlineRef = useRef(null)
+  const alarmPermissionStateRef = useRef(null)
+  const appStateRef = useRef(AppState.currentState)
+  const phases = useMemo(() => buildPhases(settings), [settings])
+  const flowComplete = isFlowComplete(currentPhase)
+  const displaySeconds = getPhaseDisplaySeconds({
+    phaseId: currentPhase,
+    settings,
+    timeLeft,
+    isWaitingForContinue
+  })
+  const permissionGuideState = useMemo(
+    () => createPermissionGuideState(alarmPermissionIssues),
+    [alarmPermissionIssues]
+  )
+  const currentPermissionGuide = getPermissionIssueGuide(
+    permissionGuideState.currentIssue?.id
+  )
+
+  if (!appLoggerRef.current) {
+    appLoggerRef.current = createAppLogger({ storage: AsyncStorage })
+  }
+
+  const writeLog = (level, moduleName, message, details) => {
+    appLoggerRef.current[level](moduleName, message, details).catch(error => {
+      console.warn('Failed to write app log:', error)
+    })
+  }
+
+  const syncNativeAlarmDebugEvents = async () => {
+    const alarmModule = getAndroidAlarmModule()
+    if (!alarmModule?.getNativeAlarmDebugEvents) return
+
+    try {
+      const rawEvents = await alarmModule.getNativeAlarmDebugEvents()
+      const events = JSON.parse(rawEvents)
+      if (!Array.isArray(events) || events.length === 0) return
+
+      for (const event of [...events].reverse()) {
+        const level = ['info', 'warn', 'error'].includes(event.level)
+          ? event.level
+          : 'info'
+        await appLoggerRef.current[level](
+          event.module || 'native:alarm',
+          event.message || 'native alarm event',
+          {
+            nativeTimestamp: event.timestamp,
+            ...(event.details || {})
+          }
+        )
+      }
+
+      if (alarmModule.clearNativeAlarmDebugEvents) {
+        await alarmModule.clearNativeAlarmDebugEvents()
+      }
+    } catch (error) {
+      writeLog('error', 'logs', 'failed to sync native alarm debug events', error)
+    }
+  }
+
+  // Load settings from storage on mount
+  useEffect(() => {
+    loadSettings()
+    initNotifications()
+  }, [])
+
+  const loadSettings = async () => {
+    try {
+      const stored = await AsyncStorage.getItem('medicineSettings')
+      if (stored) {
+        const parsed = normalizeSettings(JSON.parse(stored))
+        setSettings(parsed)
+        setTempSettings(parsed)
+      }
+    } catch (error) {
+      console.error('Error loading settings:', error)
+    }
+  }
+
+  const initNotifications = async () => {
+    if (Platform.OS === 'web') {
+      setNotificationSupported(false)
+      writeLog('warn', 'notifications', 'notifications unavailable on web')
+      return
+    }
+
+    try {
+      writeLog('info', 'notifications', 'initializing notification channel')
+      const Notifications = await import('expo-notifications')
+      notificationsRef.current = Notifications
+      Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+          shouldShowBanner: true,
+          shouldShowList: true,
+          shouldPlaySound: true,
+          shouldSetBadge: false,
+          priority: Notifications.AndroidNotificationPriority.MAX
+        })
+      })
+
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync(
+          NOTIFICATION_CHANNEL_ID,
+          {
+            name: '熬中药计时提醒',
+            importance: Notifications.AndroidImportance.MAX,
+            enableVibrate: true,
+            vibrationPattern: [0, 500, 250, 500],
+            audioAttributes: {
+              usage: Notifications.AndroidAudioUsage.ALARM,
+              contentType: Notifications.AndroidAudioContentType.SONIFICATION
+            },
+            lockscreenVisibility:
+              Notifications.AndroidNotificationVisibility.PUBLIC
+          }
+        )
+      }
+
+      const { status } = await Notifications.requestPermissionsAsync()
+      const granted = status === 'granted'
+      setNotificationSupported(granted)
+      writeLog('info', 'notifications', 'notification permission checked', {
+        status,
+        granted
+      })
+      refreshAndroidAlarmPermissions()
+    } catch (error) {
+      console.warn('Notifications unavailable in this environment:', error)
+      writeLog('error', 'notifications', 'notification initialization failed', error)
+      setNotificationSupported(false)
+    }
+  }
+
+  const getAndroidAlarmModule = () => {
+    if (Platform.OS !== 'android') return null
+    return NativeModules.AndroidAlarmScheduler || null
+  }
+
+  const openAndroidAlarmSetting = async issue => {
+    const alarmModule = getAndroidAlarmModule()
+    if (!issue?.action || !alarmModule?.[issue.action]) return
+
+    try {
+      writeLog('info', 'permissions', 'opening Android alarm setting', issue)
+      if (Platform.OS === 'android' && issue.id === 'overlay') {
+        ToastAndroid.show(
+          '进入后点「其他权限」，再开启「显示悬浮窗」',
+          ToastAndroid.LONG
+        )
+      }
+      await alarmModule[issue.action]()
+    } catch (error) {
+      console.warn('Failed to open Android alarm settings:', error)
+      writeLog('error', 'permissions', 'failed to open Android alarm setting', {
+        issue,
+        error
+      })
+    }
+  }
+
+  const refreshAndroidAlarmPermissions = async ({ showAlert = false } = {}) => {
+    const alarmModule = getAndroidAlarmModule()
+    if (!alarmModule?.getAlarmPermissionState) {
+      setAlarmPermissionIssues([])
+      return []
+    }
+
+    try {
+      const state = await alarmModule.getAlarmPermissionState()
+      alarmPermissionStateRef.current = state
+      const issues = createAndroidAlarmPermissionChecklist(state)
+      setAlarmPermissionIssues(issues)
+      writeLog('info', 'permissions', 'Android alarm permissions checked', {
+        state,
+        missing: issues.map(issue => issue.id)
+      })
+
+      if (issues.length > 0 && showAlert) {
+        setPermissionGuideDismissed(false)
+        setShowPermissionGuide(true)
+      }
+
+      return issues
+    } catch (error) {
+      console.warn('Failed to check Android alarm permissions:', error)
+      writeLog('error', 'permissions', 'failed to check Android alarm permissions', error)
+      alarmPermissionStateRef.current = null
+      return []
+    }
+  }
+
+  const saveSettings = async () => {
+    const safeSettings = normalizeSettings(tempSettings)
+    try {
+      await AsyncStorage.setItem(
+        'medicineSettings',
+        JSON.stringify(safeSettings)
+      )
+      writeLog('info', 'settings', 'settings saved', safeSettings)
+      setSettings(safeSettings)
+      setTempSettings(safeSettings)
+      setShowSettingsModal(false)
+    } catch (error) {
+      console.error('Error saving settings:', error)
+      writeLog('error', 'settings', 'failed to save settings', error)
+    }
+  }
+
+  const fillTestSettings = () => {
+    const testSettings = {
+      soakTime: 0.11,
+      highHeatTime: 0.11,
+      lowHeatTime: 0.11
+    }
+    setTempSettings(testSettings)
+    writeLog('info', 'settings', 'test settings filled', testSettings)
+  }
+
+  const sendImmediateNotification = async phase => {
+    const message = getCompletionMessage(phase)
+
+    if (notificationSupported && notificationsRef.current) {
+      try {
+        await notificationsRef.current.scheduleNotificationAsync({
+          content: {
+            title: '熬中药提醒',
+            body: message,
+            sound: 'default',
+            priority: 'max'
+          },
+          trigger:
+            Platform.OS === 'android'
+              ? { channelId: NOTIFICATION_CHANNEL_ID }
+              : null
+        })
+        return
+      } catch (error) {
+        console.warn(
+          'Failed to send notification, falling back to alert:',
+          error
+        )
+      }
+    }
+
+    Alert.alert('熬中药提醒', message)
+  }
+
+  const cancelScheduledNotification = async () => {
+    const notificationId = scheduledNotificationId.current
+    scheduledNotificationId.current = null
+    scheduledPhaseRef.current = null
+    phaseDeadlineRef.current = null
+
+    if (
+      Platform.OS === 'android' &&
+      NativeModules.AndroidAlarmScheduler
+    ) {
+      try {
+        writeLog('info', 'alarm', 'canceling native alarm')
+        await NativeModules.AndroidAlarmScheduler.cancelAlarm(
+          NATIVE_ALARM_REQUEST_CODE
+        )
+      } catch (error) {
+        console.warn('Failed to cancel native alarm:', error)
+        writeLog('warn', 'alarm', 'failed to cancel native alarm', error)
+      }
+    }
+
+    if (notificationId && notificationsRef.current) {
+      try {
+        await notificationsRef.current.cancelScheduledNotificationAsync(
+          notificationId
+        )
+      } catch (error) {
+        console.warn('Failed to cancel scheduled notification:', error)
+        writeLog('warn', 'notifications', 'failed to cancel scheduled notification', error)
+      }
+    }
+  }
+
+  const schedulePhaseNotification = async (phaseInfo, seconds) => {
+    await cancelScheduledNotification()
+
+    try {
+      if (
+        Platform.OS === 'android' &&
+        NativeModules.AndroidAlarmScheduler
+      ) {
+        const alarm = createNativeAlarmRequest(phaseInfo, seconds)
+        writeLog('info', 'alarm', 'scheduling native Android alarm', {
+          phaseId: phaseInfo.id,
+          seconds: alarm.seconds
+        })
+        await NativeModules.AndroidAlarmScheduler.scheduleAlarm(
+          alarm.requestCode,
+          alarm.seconds,
+          alarm.title,
+          alarm.body
+        )
+        phaseDeadlineRef.current = Date.now() + alarm.seconds * 1000
+        scheduledPhaseRef.current = phaseInfo.id
+        writeLog('info', 'alarm', 'native Android alarm scheduled', {
+          phaseId: phaseInfo.id,
+          deadline: phaseDeadlineRef.current
+        })
+        return
+      }
+
+      if (!notificationSupported || !notificationsRef.current) {
+        return
+      }
+
+      const id = await notificationsRef.current.scheduleNotificationAsync({
+        ...createPhaseNotificationRequest(phaseInfo, seconds)
+      })
+      scheduledNotificationId.current = id
+      phaseDeadlineRef.current =
+        Date.now() +
+        createNativeAlarmRequest(phaseInfo, seconds).seconds * 1000
+      scheduledPhaseRef.current = phaseInfo.id
+      writeLog('info', 'notifications', 'Expo notification scheduled', {
+        phaseId: phaseInfo.id,
+        notificationId: id,
+        seconds
+      })
+    } catch (error) {
+      if (error?.code === 'ERR_ANDROID_EXACT_ALARM_PERMISSION') {
+        writeLog('error', 'alarm', 'native alarm blocked by exact alarm permission', error)
+        await refreshAndroidAlarmPermissions({ showAlert: true })
+        return
+      }
+
+      console.warn('Failed to schedule notification:', error)
+      writeLog('error', 'alarm', 'failed to schedule phase reminder', error)
+    }
+  }
+
+  const finishCurrentPhase = () => {
+    const phaseToComplete = currentPhase
+    writeLog('info', 'timer', 'phase finished', {
+      phase: phaseToComplete,
+      appState: appStateRef.current
+    })
+
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+
+    if (appStateRef.current === 'active') {
+      const showInAppFallback = shouldShowInAppFallbackAlert({
+        platform: Platform.OS,
+        hasNativeAlarmModule: Boolean(getAndroidAlarmModule()?.scheduleAlarm),
+        alarmPermissionState: alarmPermissionStateRef.current
+      })
+
+      if (showInAppFallback) {
+        cancelScheduledNotification()
+        writeLog('info', 'timer', 'showing in-app fallback alert', {
+          phase: phaseToComplete
+        })
+        Alert.alert('熬中药提醒', getCompletionMessage(phaseToComplete))
+      } else {
+        scheduledNotificationId.current = null
+        scheduledPhaseRef.current = null
+        phaseDeadlineRef.current = null
+        writeLog('info', 'timer', 'in-app fallback alert skipped for native alarm', {
+          phase: phaseToComplete
+        })
+      }
+    } else {
+      scheduledPhaseRef.current = null
+      phaseDeadlineRef.current = null
+    }
+
+    const nextState = completePhase(phaseToComplete)
+    setCurrentPhase(nextState.currentPhase)
+    setTimeLeft(nextState.timeLeft)
+    setIsRunning(nextState.isRunning)
+    setIsWaitingForContinue(nextState.isWaitingForContinue)
+  }
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      writeLog('info', 'appState', 'app state changed', {
+        from: appStateRef.current,
+        to: nextAppState
+      })
+
+      if (nextAppState === 'active') {
+        syncNativeAlarmDebugEvents()
+        refreshAndroidAlarmPermissions()
+      }
+
+      if (
+        nextAppState === 'active' &&
+        isRunning &&
+        phaseDeadlineRef.current &&
+        Date.now() >= phaseDeadlineRef.current
+      ) {
+        finishCurrentPhase()
+      }
+
+      appStateRef.current = nextAppState
+    })
+
+    return () => subscription.remove()
+  }, [isRunning, currentPhase])
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return
+
+    if (alarmPermissionIssues.length === 0) {
+      setShowPermissionGuide(false)
+      return
+    }
+
+    if (!permissionGuideDismissed && !showLogScreen) {
+      setShowPermissionGuide(true)
+    }
+  }, [alarmPermissionIssues, permissionGuideDismissed, showLogScreen])
+
+  useEffect(() => {
+    if (!isRunning || isWaitingForContinue) {
+      if (timerRef.current) clearInterval(timerRef.current)
+      return
+    }
+
+    if (currentPhase > 7) {
+      setIsRunning(false)
+      setTimeLeft(0)
+      sendImmediateNotification(8)
+      return
+    }
+
+    if (timeLeft === 0) {
+      const phaseInfo = getPhaseInfo(currentPhase, settings)
+      setTimeLeft(getPhaseDurationSeconds(phaseInfo))
+      return
+    }
+
+    timerRef.current = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 1) {
+          finishCurrentPhase()
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+
+    return () => clearInterval(timerRef.current)
+  }, [
+    isRunning,
+    isWaitingForContinue,
+    currentPhase,
+    timeLeft,
+    settings,
+    notificationSupported
+  ])
+
+  useEffect(() => {
+    if (!shouldSchedulePhaseReminder({
+      isRunning,
+      isWaitingForContinue,
+      currentPhase,
+      timeLeft,
+      scheduledPhase: scheduledPhaseRef.current
+    })) {
+      return
+    }
+
+    const phaseInfo = getPhaseInfo(currentPhase, settings)
+    schedulePhaseNotification(phaseInfo, timeLeft)
+  }, [
+    isRunning,
+    isWaitingForContinue,
+    currentPhase,
+    timeLeft,
+    notificationSupported,
+    settings
+  ])
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+      cancelScheduledNotification()
+    }
+  }, [])
+
+  const startTimer = async () => {
+    writeLog('info', 'timer', 'start requested', {
+      phase: currentPhase,
+      timeLeft,
+      waiting: isWaitingForContinue
+    })
+    const issues = await refreshAndroidAlarmPermissions({ showAlert: true })
+    if (issues.length > 0) {
+      setPermissionGuideDismissed(false)
+      setShowPermissionGuide(true)
+      writeLog('warn', 'timer', 'start blocked by missing permissions', {
+        missing: issues.map(issue => issue.id)
+      })
+      return
+    }
+
+    if (currentPhase > 7) {
+      setCurrentPhase(1)
+      setTimeLeft(0)
+    }
+    setIsWaitingForContinue(false)
+    setIsRunning(true)
+  }
+
+  const restartTimer = async () => {
+    writeLog('info', 'timer', 'restart requested')
+    const issues = await refreshAndroidAlarmPermissions({ showAlert: true })
+    if (issues.length > 0) {
+      setPermissionGuideDismissed(false)
+      setShowPermissionGuide(true)
+      writeLog('warn', 'timer', 'restart blocked by missing permissions', {
+        missing: issues.map(issue => issue.id)
+      })
+      return
+    }
+
+    setCurrentPhase(1)
+    setTimeLeft(0)
+    setIsWaitingForContinue(false)
+    setIsRunning(true)
+  }
+
+  const stopTimer = () => {
+    writeLog('info', 'timer', 'timer reset requested', {
+      phase: currentPhase,
+      timeLeft
+    })
+    setIsRunning(false)
+    setIsWaitingForContinue(false)
+    setCurrentPhase(1)
+    setTimeLeft(0)
+    phaseDeadlineRef.current = null
+    cancelScheduledNotification()
+  }
+
+  const pauseTimer = () => {
+    writeLog('info', 'timer', 'timer pause requested', {
+      phase: currentPhase,
+      timeLeft
+    })
+    setIsRunning(false)
+    setIsWaitingForContinue(false)
+    phaseDeadlineRef.current = null
+    cancelScheduledNotification()
+  }
+
+  const formatTime = seconds => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const currentPermissionIssue = permissionGuideState.currentIssue
+
+  return (
+    <SafeAreaProvider>
+      <PaperProvider>
+        <StatusBar style="dark" />
+        <Appbar.Header>
+          {showLogScreen && (
+            <Appbar.BackAction onPress={() => setShowLogScreen(false)} />
+          )}
+          <Appbar.Content
+            title={showLogScreen ? '运行日志' : '熬中药计时器'}
+            subtitle={showLogScreen ? '真机调试线索' : '智能提醒'}
+          />
+          {showLogScreen ? null : (
+            <>
+              <Appbar.Action
+                icon="text-box-outline"
+                onPress={async () => {
+                  await syncNativeAlarmDebugEvents()
+                  writeLog('info', 'logs', 'log screen opened')
+                  setShowLogScreen(true)
+                }}
+              />
+              <Appbar.Action
+                icon="cog"
+                onPress={() => {
+                  setTempSettings(settings)
+                  setShowSettingsModal(true)
+                }}
+              />
+            </>
+          )}
+        </Appbar.Header>
+
+        {showLogScreen ? (
+          <LogScreen logger={appLoggerRef.current} />
+        ) : (
+          <View style={styles.container}>
+          <Portal>
+            <Modal
+              visible={showSettingsModal}
+              onDismiss={() => setShowSettingsModal(false)}
+              contentContainerStyle={styles.modalContent}
+            >
+              <Text variant="headlineSmall" style={styles.modalTitle}>
+                配置时间
+              </Text>
+              <Button
+                mode="outlined"
+                onPress={fillTestSettings}
+                style={styles.testSettingsButton}
+              >
+                填入测试值 0.11 分钟
+              </Button>
+              <TextInput
+                label="泡水时间（分钟）"
+                value={tempSettings.soakTime.toString()}
+                onChangeText={text =>
+                  setTempSettings({
+                    ...tempSettings,
+                    soakTime: text
+                  })
+                }
+                keyboardType="decimal-pad"
+                style={styles.input}
+              />
+              <TextInput
+                label="大火熬药时间（分钟）"
+                value={tempSettings.highHeatTime.toString()}
+                onChangeText={text =>
+                  setTempSettings({
+                    ...tempSettings,
+                    highHeatTime: text
+                  })
+                }
+                keyboardType="decimal-pad"
+                style={styles.input}
+              />
+              <TextInput
+                label="小火熬药时间（分钟）"
+                value={tempSettings.lowHeatTime.toString()}
+                onChangeText={text =>
+                  setTempSettings({
+                    ...tempSettings,
+                    lowHeatTime: text
+                  })
+                }
+                keyboardType="decimal-pad"
+                style={styles.input}
+              />
+              <View style={styles.modalButtons}>
+                <Button
+                  mode="outlined"
+                  onPress={() => setShowSettingsModal(false)}
+                  style={styles.modalButton}
+                >
+                  取消
+                </Button>
+                <Button
+                  mode="contained"
+                  onPress={saveSettings}
+                  style={styles.modalButton}
+                >
+                  保存
+                </Button>
+              </View>
+            </Modal>
+            <Modal
+              visible={
+                showPermissionGuide &&
+                Boolean(currentPermissionIssue) &&
+                !showSettingsModal
+              }
+              onDismiss={() => {
+                setPermissionGuideDismissed(true)
+                setShowPermissionGuide(false)
+              }}
+              contentContainerStyle={styles.permissionGuide}
+            >
+              <Text variant="headlineSmall" style={styles.permissionGuideTitle}>
+                开启可靠提醒
+              </Text>
+              <Text variant="bodyMedium" style={styles.permissionGuideText}>
+                为了在熬药时间到时及时提醒你，即使正在使用其他应用或手机锁屏，也需要开启必要提醒权限。
+              </Text>
+              <Text variant="bodyMedium" style={styles.permissionGuideText}>
+                {currentPermissionGuide.detail}
+              </Text>
+              <Text variant="labelLarge" style={styles.permissionGuideProgress}>
+                已完成 {permissionGuideState.completedCount} / {permissionGuideState.totalCount}
+              </Text>
+              <View style={styles.permissionGuideHint}>
+                <Text style={styles.permissionGuideHintTitle}>
+                  下一步怎么操作
+                </Text>
+                <Text style={styles.permissionGuideHintText}>
+                  {currentPermissionGuide.settingHint}
+                </Text>
+              </View>
+              <View style={styles.permissionStepList}>
+                {alarmPermissionIssues.map((issue, index) => (
+                  <View key={issue.id} style={styles.permissionStep}>
+                    <Text style={styles.permissionStepIndex}>
+                      {index === 0 ? '当前' : '待开'}
+                    </Text>
+                    <Text style={styles.permissionStepText}>{issue.title}</Text>
+                  </View>
+                ))}
+              </View>
+              <Button
+                mode="contained"
+                onPress={() => openAndroidAlarmSetting(currentPermissionIssue)}
+                style={styles.permissionGuideButton}
+              >
+                去开启：{currentPermissionIssue?.title}
+              </Button>
+              <Button
+                mode="outlined"
+                onPress={() => refreshAndroidAlarmPermissions()}
+                style={styles.permissionGuideButton}
+              >
+                我已开启，重新检测
+              </Button>
+              <Button
+                mode="text"
+                onPress={() => {
+                  setPermissionGuideDismissed(true)
+                  setShowPermissionGuide(false)
+                }}
+                style={styles.permissionGuideButton}
+              >
+                稍后再说
+              </Button>
+            </Modal>
+          </Portal>
+
+          <ScrollView style={styles.content}>
+            {currentPermissionIssue && (
+              <Card style={styles.permissionCard}>
+                <Card.Content>
+                  <Text variant="titleMedium" style={styles.permissionTitle}>
+                    提醒权限还差一步
+                  </Text>
+                  <Text style={styles.permissionText}>
+                    开启后，时间到时可以准时响铃、振动并保留通知提醒。
+                  </Text>
+                  <Button
+                    mode="contained"
+                    onPress={() => {
+                      setPermissionGuideDismissed(false)
+                      setShowPermissionGuide(true)
+                    }}
+                    style={styles.permissionButton}
+                  >
+                    设置提醒权限
+                  </Button>
+                </Card.Content>
+              </Card>
+            )}
+
+            {flowComplete ? (
+              <View style={styles.timerContainer}>
+                <Card style={styles.completeCard}>
+                  <Card.Content style={styles.completeContent}>
+                    <Text variant="displaySmall" style={styles.completeTitle}>
+                      熬药完成
+                    </Text>
+                    <Text variant="headlineSmall" style={styles.completeMark}>
+                      全部阶段已完成
+                    </Text>
+                    <Text variant="bodyLarge" style={styles.completeText}>
+                      可以关火收药了
+                    </Text>
+                  </Card.Content>
+                </Card>
+                <Card style={styles.progressCard}>
+                  <Card.Content>
+                    <Text variant="labelMedium">进度</Text>
+                    <View style={styles.progressBar}>
+                      {phases.map(phase => (
+                        <View
+                          key={phase.id}
+                          style={[
+                            styles.progressDot,
+                            { backgroundColor: '#4CAF50' }
+                          ]}
+                        />
+                      ))}
+                    </View>
+                  </Card.Content>
+                </Card>
+              </View>
+            ) : !isRunning &&
+              !isWaitingForContinue &&
+              currentPhase === 1 &&
+              timeLeft === 0 ? (
+              <View style={styles.startContainer}>
+                <Text variant="displayMedium" style={styles.welcomeText}>
+                  熬中药计时器
+                </Text>
+                <Text variant="bodyLarge" style={styles.descText}>
+                  准备好开始熬中药了吗？
+                </Text>
+                <Card style={styles.scheduleCard}>
+                  <Card.Content>
+                    <Text variant="titleMedium" style={styles.cardTitle}>
+                      今天的流程
+                    </Text>
+                    {phases.map((phase, index) => (
+                      <Text key={index} style={styles.phaseText}>
+                        • {phase.shortName}: {phase.description}
+                      </Text>
+                    ))}
+                  </Card.Content>
+                </Card>
+              </View>
+            ) : (
+              <View style={styles.timerContainer}>
+                <Card style={styles.timerCard}>
+                  <Card.Content style={styles.timerContent}>
+                    {currentPhase <= 7 ? (
+                      <>
+                        <Text variant="headlineSmall" style={styles.phaseName}>
+                          {getPhaseInfo(currentPhase, settings).name}
+                        </Text>
+                        {getPhaseInfo(currentPhase, settings).subtitle && (
+                          <Text
+                            variant="titleMedium"
+                            style={styles.phaseSubtitle}
+                          >
+                            {getPhaseInfo(currentPhase, settings).subtitle}
+                          </Text>
+                        )}
+                        <Text variant="displayLarge" style={styles.timer}>
+                          {formatTime(displaySeconds)}
+                        </Text>
+                      </>
+                    ) : (
+                      <>
+                        <Text variant="headlineSmall">✓ 完成！</Text>
+                        <Text variant="bodyLarge">所有阶段已完成</Text>
+                      </>
+                    )}
+                  </Card.Content>
+                </Card>
+
+                {currentPhase <= 7 && (
+                  <Card style={styles.progressCard}>
+                    <Card.Content>
+                      <Text variant="labelMedium">进度</Text>
+                      <View style={styles.progressBar}>
+                        {phases.map((phase, index) => (
+                          <View
+                            key={index}
+                            style={[
+                              styles.progressDot,
+                              {
+                                backgroundColor:
+                                  phase.id < currentPhase
+                                    ? '#4CAF50'
+                                    : phase.id === currentPhase
+                                      ? '#2196F3'
+                                      : '#E0E0E0'
+                              }
+                            ]}
+                          />
+                        ))}
+                      </View>
+                    </Card.Content>
+                  </Card>
+                )}
+              </View>
+            )}
+
+            <View style={styles.buttonContainer}>
+              {flowComplete ? (
+                <>
+                  <Button
+                    mode="contained"
+                    onPress={restartTimer}
+                    style={styles.button}
+                    labelStyle={styles.buttonLabel}
+                  >
+                    重新开始
+                  </Button>
+                  <Button
+                    mode="outlined"
+                    onPress={stopTimer}
+                    style={styles.button}
+                    labelStyle={styles.buttonLabel}
+                  >
+                    重置
+                  </Button>
+                </>
+              ) : !isRunning &&
+                !isWaitingForContinue &&
+                currentPhase === 1 &&
+                timeLeft === 0 ? (
+                <Button
+                  mode="contained"
+                  onPress={startTimer}
+                  style={styles.button}
+                  labelStyle={styles.buttonLabel}
+                >
+                  开始熬中药
+                </Button>
+              ) : (
+                <>
+                  {isRunning && !isWaitingForContinue ? (
+                    <Button
+                      mode="contained"
+                      onPress={pauseTimer}
+                      style={styles.button}
+                      labelStyle={styles.buttonLabel}
+                    >
+                      暂停
+                    </Button>
+                  ) : (
+                    <Button
+                      mode="contained"
+                      onPress={startTimer}
+                      style={styles.button}
+                      labelStyle={styles.buttonLabel}
+                    >
+                      继续
+                    </Button>
+                  )}
+                  <Button
+                    mode="outlined"
+                    onPress={stopTimer}
+                    style={styles.button}
+                    labelStyle={styles.buttonLabel}
+                  >
+                    重置
+                  </Button>
+                </>
+              )}
+            </View>
+          </ScrollView>
+          </View>
+        )}
+      </PaperProvider>
+    </SafeAreaProvider>
+  )
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#f5f5f5'
+  },
+  content: {
+    flex: 1,
+    padding: 16
+  },
+  startContainer: {
+    alignItems: 'center',
+    marginTop: 40
+  },
+  welcomeText: {
+    marginBottom: 8,
+    textAlign: 'center',
+    color: '#1976D2'
+  },
+  descText: {
+    marginBottom: 24,
+    textAlign: 'center',
+    color: '#666'
+  },
+  scheduleCard: {
+    width: '100%',
+    marginBottom: 24
+  },
+  cardTitle: {
+    marginBottom: 12,
+    fontWeight: 'bold'
+  },
+  phaseText: {
+    marginBottom: 8,
+    fontSize: 14,
+    color: '#333'
+  },
+  permissionCard: {
+    marginBottom: 16,
+    backgroundColor: '#FFF8E1'
+  },
+  permissionTitle: {
+    marginBottom: 8,
+    color: '#B45309',
+    fontWeight: 'bold'
+  },
+  permissionText: {
+    marginBottom: 4,
+    color: '#4B5563'
+  },
+  permissionButton: {
+    marginTop: 12
+  },
+  permissionGuide: {
+    margin: 20,
+    padding: 22,
+    borderRadius: 8,
+    backgroundColor: '#fff'
+  },
+  permissionGuideTitle: {
+    marginBottom: 10,
+    color: '#111827',
+    fontWeight: 'bold'
+  },
+  permissionGuideText: {
+    marginBottom: 16,
+    color: '#4B5563',
+    lineHeight: 22
+  },
+  permissionGuideProgress: {
+    marginBottom: 10,
+    color: '#1976D2'
+  },
+  permissionGuideHint: {
+    marginBottom: 14,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: '#EFF6FF'
+  },
+  permissionGuideHintTitle: {
+    marginBottom: 4,
+    color: '#1D4ED8',
+    fontWeight: 'bold'
+  },
+  permissionGuideHintText: {
+    color: '#1F2937',
+    lineHeight: 21
+  },
+  permissionStepList: {
+    marginBottom: 14
+  },
+  permissionStep: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8
+  },
+  permissionStepIndex: {
+    width: 46,
+    color: '#1976D2',
+    fontWeight: 'bold'
+  },
+  permissionStepText: {
+    flex: 1,
+    color: '#374151'
+  },
+  permissionGuideButton: {
+    marginTop: 10
+  },
+  timerContainer: {
+    alignItems: 'center',
+    marginTop: 20
+  },
+  timerCard: {
+    width: '100%',
+    marginBottom: 20,
+    elevation: 8
+  },
+  timerContent: {
+    alignItems: 'center',
+    paddingVertical: 40
+  },
+  phaseName: {
+    color: '#1976D2',
+    marginBottom: 8
+  },
+  phaseSubtitle: {
+    color: '#FF6F00',
+    marginBottom: 20
+  },
+  timer: {
+    color: '#D32F2F',
+    fontWeight: 'bold'
+  },
+  completeCard: {
+    width: '100%',
+    marginBottom: 20,
+    elevation: 8
+  },
+  completeContent: {
+    alignItems: 'center',
+    paddingVertical: 48
+  },
+  completeTitle: {
+    color: '#2E7D32',
+    marginBottom: 16,
+    fontWeight: 'bold'
+  },
+  completeMark: {
+    color: '#1976D2',
+    marginBottom: 12
+  },
+  completeText: {
+    color: '#555',
+    textAlign: 'center'
+  },
+  progressCard: {
+    width: '100%',
+    marginBottom: 20
+  },
+  progressBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 12
+  },
+  progressDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6
+  },
+  buttonContainer: {
+    padding: 16,
+    gap: 12
+  },
+  button: {
+    paddingVertical: 8
+  },
+  buttonLabel: {
+    fontSize: 16
+  },
+  modalContent: {
+    backgroundColor: 'white',
+    padding: 20,
+    margin: 20,
+    borderRadius: 12
+  },
+  modalTitle: {
+    marginBottom: 20
+  },
+  input: {
+    marginBottom: 16
+  },
+  testSettingsButton: {
+    marginBottom: 16
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 20
+  },
+  modalButton: {
+    flex: 1
+  }
+})

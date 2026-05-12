@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ANDROID_DIR="$ROOT_DIR/android"
+DIST_DIR="$ROOT_DIR/dist"
+NODE_22_BIN="/Users/liyin/.nvm/versions/node/v22.22.1/bin"
+RELEASE_APK="$ANDROID_DIR/app/build/outputs/apk/release/app-release.apk"
+DEBUG_APK="$ANDROID_DIR/app/build/outputs/apk/debug/app-debug.apk"
+DIST_APK="$DIST_DIR/medicine-decoction-release.apk"
+APKSIGNER="${ANDROID_HOME:-}/build-tools/36.0.0/apksigner"
+
+if [ ! -d "$ANDROID_DIR" ]; then
+  echo "Android project directory not found: $ANDROID_DIR" >&2
+  exit 1
+fi
+
+if [ -d "$NODE_22_BIN" ]; then
+  export PATH="$NODE_22_BIN:$PATH"
+fi
+
+echo "Using node: $(command -v node)"
+node -v
+
+cd "$ANDROID_DIR"
+./gradlew --stop
+./gradlew :app:assembleDebug :app:assembleRelease
+
+mkdir -p "$DIST_DIR"
+cp "$RELEASE_APK" "$DIST_APK"
+
+echo
+echo "APK files:"
+ls -lh "$DEBUG_APK" "$RELEASE_APK" "$DIST_APK"
+
+if [ -x "$APKSIGNER" ]; then
+  echo
+  echo "Verifying release APK signature:"
+  "$APKSIGNER" verify --verbose "$DIST_APK"
+else
+  echo
+  echo "apksigner not found or not executable, skipped signature verification: $APKSIGNER"
+fi
+
+echo
+echo "Android build completed: $DIST_APK"
