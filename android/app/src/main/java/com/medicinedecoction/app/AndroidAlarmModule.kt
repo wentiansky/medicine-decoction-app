@@ -222,18 +222,10 @@ class AndroidAlarmModule(
     try {
       AndroidAlarmReceiver.ensureNotificationChannel(reactContext)
 
-      val canUseFullScreenIntent = AndroidAlarmReceiver.canUseFullScreenIntent(reactContext)
-      val fullScreenPendingIntent = if (canUseFullScreenIntent) {
-        AndroidAlarmReceiver.createAlarmActivityPendingIntent(reactContext, title, body)
-      } else {
-        null
-      }
-
       AndroidAlarmReceiver.postAlarmNotification(
         reactContext,
         title,
-        body,
-        fullScreenPendingIntent
+        body
       )
 
       reactContext.startActivity(
@@ -248,7 +240,7 @@ class AndroidAlarmModule(
         JSONObject().apply {
           put("title", title)
           put("body", body)
-          put("canUseFullScreenIntent", canUseFullScreenIntent)
+          put("route", "direct-activity")
         }
       )
 

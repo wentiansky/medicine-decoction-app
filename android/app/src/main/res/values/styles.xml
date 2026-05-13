@@ -2,6 +2,15 @@
   <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
     <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
   </style>
+  <style name="AlarmAlertAnimation">
+    <item name="android:activityOpenEnterAnimation">@null</item>
+    <item name="android:activityOpenExitAnimation">@null</item>
+    <item name="android:activityCloseEnterAnimation">@null</item>
+    <item name="android:activityCloseExitAnimation">@null</item>
+  </style>
+  <style name="AlarmAlertTheme" parent="AppTheme">
+    <item name="android:windowAnimationStyle">@style/AlarmAlertAnimation</item>
+  </style>
   <style name="Theme.App.SplashScreen" parent="AppTheme">
     <item name="android:windowBackground">@drawable/splashscreen_logo</item>
   </style>

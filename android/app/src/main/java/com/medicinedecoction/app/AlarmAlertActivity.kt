@@ -3,20 +3,17 @@ package com.medicinedecoction.app
 import android.app.Activity
 import android.app.KeyguardManager
 import android.content.Intent
-import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
-import android.view.Gravity
-import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.Button
-import android.widget.LinearLayout
 import android.widget.TextView
 import org.json.JSONObject
 
 class AlarmAlertActivity : Activity() {
   private var alarmSignal: AlarmSignalController? = null
+  private var titleTextView: TextView? = null
+  private var bodyTextView: TextView? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
     logActivityEvent(
@@ -30,8 +27,8 @@ class AlarmAlertActivity : Activity() {
     configureLockScreenWindow()
     super.onCreate(savedInstanceState)
 
-    val title = intent.getStringExtra(AndroidAlarmReceiver.EXTRA_TITLE) ?: "熬中药提醒"
-    val body = intent.getStringExtra(AndroidAlarmReceiver.EXTRA_BODY) ?: "时间到了"
+    val title = getAlarmTitle(intent)
+    val body = getAlarmBody(intent)
 
     AndroidAlarmDebugLog.append(
       this,
@@ -45,7 +42,7 @@ class AlarmAlertActivity : Activity() {
     )
 
     AlarmOverlayService.stop(this)
-    setContentView(createContentView(title, body))
+    updateAlarmContent(title, body)
     startAlarmSignal()
   }
 
@@ -72,6 +69,11 @@ class AlarmAlertActivity : Activity() {
       }
     )
     configureLockScreenWindow()
+    val title = getAlarmTitle(intent)
+    val body = getAlarmBody(intent)
+    AlarmOverlayService.stop(this)
+    updateAlarmContent(title, body)
+    startAlarmSignal()
   }
 
   override fun onDestroy() {
@@ -110,64 +112,32 @@ class AlarmAlertActivity : Activity() {
     logActivityEvent("info", "alarm activity keyguard state captured", captureKeyguardState())
   }
 
-  private fun createContentView(title: String, body: String): LinearLayout {
-    val density = resources.displayMetrics.density
-    val root = LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL
-      gravity = Gravity.CENTER
-      setBackgroundColor(Color.rgb(38, 29, 18))
-      setPadding(
-        (28 * density).toInt(),
-        (28 * density).toInt(),
-        (28 * density).toInt(),
-        (28 * density).toInt()
+  private fun getAlarmTitle(intent: Intent?): String =
+    intent?.getStringExtra(AndroidAlarmReceiver.EXTRA_TITLE) ?: "熬中药提醒"
+
+  private fun getAlarmBody(intent: Intent?): String =
+    intent?.getStringExtra(AndroidAlarmReceiver.EXTRA_BODY) ?: "时间到了"
+
+  private fun updateAlarmContent(title: String, body: String) {
+    val titleView = titleTextView
+    val bodyView = bodyTextView
+
+    if (titleView == null || bodyView == null) {
+      val presentationView = AlarmPresentationViewFactory.create(
+        this,
+        title,
+        body,
+        onDismiss = { dismissAlarm() },
+        onOpenApp = { openApp() }
       )
-      layoutParams = LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.MATCH_PARENT
-      )
+      titleTextView = presentationView.titleView
+      bodyTextView = presentationView.bodyView
+      setContentView(presentationView.root)
+      return
     }
 
-    val titleView = TextView(this).apply {
-      text = title
-      setTextColor(Color.WHITE)
-      textSize = 30f
-      gravity = Gravity.CENTER
-    }
-
-    val bodyView = TextView(this).apply {
-      text = body
-      setTextColor(Color.rgb(255, 232, 199))
-      textSize = 24f
-      gravity = Gravity.CENTER
-      setPadding(0, (18 * density).toInt(), 0, (34 * density).toInt())
-    }
-
-    val dismissButton = Button(this).apply {
-      text = "我知道了"
-      textSize = 20f
-      setOnClickListener { dismissAlarm() }
-    }
-
-    val openAppButton = Button(this).apply {
-      text = "打开应用"
-      textSize = 18f
-      setOnClickListener { openApp() }
-    }
-
-    val buttonParams = LinearLayout.LayoutParams(
-      ViewGroup.LayoutParams.MATCH_PARENT,
-      (56 * density).toInt()
-    ).apply {
-      topMargin = (12 * density).toInt()
-    }
-
-    root.addView(titleView)
-    root.addView(bodyView)
-    root.addView(dismissButton, buttonParams)
-    root.addView(openAppButton, buttonParams)
-
-    return root
+    titleView.text = title
+    bodyView.text = body
   }
 
   private fun dismissAlarm() {

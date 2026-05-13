@@ -10,6 +10,10 @@ const appSource = fs.readFileSync(
 
 test('active phase completion requests native alarm presentation before in-app fallback', () => {
   assert.match(appSource, /presentAlarmNow\('熬中药提醒', completionMessage\)/)
+  assert.match(
+    appSource,
+    /await cancelScheduledNotification\(\)[\s\S]*presentAlarmNow\('熬中药提醒', completionMessage\)/
+  )
   assert.match(appSource, /requesting native alarm presentation from active app/)
   assert.match(appSource, /failed to present native alarm from active app/)
   assert.doesNotMatch(appSource, /shouldShowInAppFallbackAlert/)

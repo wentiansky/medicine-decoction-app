@@ -8,6 +8,25 @@ const projectRoot = path.resolve(__dirname, '..')
 const readAndroidSource = relativePath =>
   fs.readFileSync(path.join(projectRoot, relativePath), 'utf8')
 
+test('native alarm presentation reuses one view factory for activity and overlay', () => {
+  const activitySource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AlarmAlertActivity.kt'
+  )
+  const serviceSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AlarmOverlayService.kt'
+  )
+  const factorySource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AlarmPresentationViewFactory.kt'
+  )
+
+  assert.match(factorySource, /object AlarmPresentationViewFactory/)
+  assert.match(factorySource, /data class AlarmPresentationView/)
+  assert.match(activitySource, /AlarmPresentationViewFactory\.create/)
+  assert.match(serviceSource, /AlarmPresentationViewFactory\.create/)
+  assert.doesNotMatch(activitySource, /setBackgroundColor\(Color\.rgb\(38, 29, 18\)\)/)
+  assert.doesNotMatch(serviceSource, /setBackgroundColor\(Color\.rgb\(38, 29, 18\)\)/)
+})
+
 test('Android alarm activity pending intents opt in to background activity launch', () => {
   const moduleSource = readAndroidSource(
     'android/app/src/main/java/com/medicinedecoction/app/AndroidAlarmModule.kt'
@@ -37,15 +56,44 @@ test('Android alarm activity pending intents opt in to background activity launc
   assert.doesNotMatch(manifestSource, /android\.permission\.SCHEDULE_EXACT_ALARM/)
 })
 
+test('immediate in-app alarm starts activity directly without a full-screen notification launch', () => {
+  const moduleSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AndroidAlarmModule.kt'
+  )
+  const presentAlarmNowSection =
+    moduleSource.match(/fun presentAlarmNow\([\s\S]*?\n  private fun createAlarmActivityPendingIntent/)?.[0] || ''
+
+  assert.match(
+    presentAlarmNowSection,
+    /AndroidAlarmReceiver\.postAlarmNotification\(\s*reactContext,\s*title,\s*body\s*\)/
+  )
+  assert.match(presentAlarmNowSection, /reactContext\.startActivity/)
+  assert.doesNotMatch(presentAlarmNowSection, /fullScreenPendingIntent/)
+  assert.doesNotMatch(presentAlarmNowSection, /createAlarmActivityPendingIntent\(reactContext, title, body\)/)
+})
+
 test('native alarm flow keeps explicit diagnostics for lock-screen activity lifecycle', () => {
   const activitySource = readAndroidSource(
     'android/app/src/main/java/com/medicinedecoction/app/AlarmAlertActivity.kt'
+  )
+  const manifestSource = readAndroidSource(
+    'android/app/src/main/AndroidManifest.xml'
+  )
+  const stylesSource = readAndroidSource(
+    'android/app/src/main/res/values/styles.xml'
   )
 
   assert.match(activitySource, /alarm activity onCreate entered/)
   assert.match(activitySource, /alarm activity onResume entered/)
   assert.match(activitySource, /alarm activity onStart entered/)
   assert.match(activitySource, /alarm activity onNewIntent received/)
+  assert.match(activitySource, /private var titleTextView: TextView\? = null/)
+  assert.match(activitySource, /private var bodyTextView: TextView\? = null/)
+  assert.match(activitySource, /updateAlarmContent\(title, body\)/)
+  assert.match(activitySource, /titleView\.text = title/)
+  assert.match(activitySource, /bodyView\.text = body/)
+  assert.match(manifestSource, /android:theme="@style\/AlarmAlertTheme"/)
+  assert.match(stylesSource, /android:windowAnimationStyle/)
   assert.match(activitySource, /alarm activity window configured/)
   assert.match(activitySource, /alarm activity keyguard state captured/)
   assert.match(activitySource, /AlarmSignalController\(this, "alarm activity"/)

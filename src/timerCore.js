@@ -53,6 +53,10 @@ const PERMISSION_GUIDES = {
   lockScreenDisplay: {
     detail: '开启后，锁屏或息屏时更容易在锁屏层显示提醒。',
     settingHint: '进入系统页后，点「其他权限」开启「锁屏显示」；返回应用后点重新检测。'
+  },
+  lockScreenReminder: {
+    detail: '锁屏或息屏时，需要再开启「后台弹出界面」和「锁屏显示」。',
+    settingHint: '进入系统页后，点「其他权限」，把「后台弹出界面」和「锁屏显示」都设为允许；没有对应开关就返回应用。'
   }
 }
 
@@ -132,6 +136,14 @@ const getPhaseInfo = (phaseId, settings) =>
 
 const getPhaseDurationSeconds = phaseInfo =>
   Math.max(1, Math.round((phaseInfo?.durationMinutes || 0) * 60))
+
+const getWallClockRemainingSeconds = ({
+  deadlineAt,
+  now = Date.now()
+}) => {
+  if (!Number.isFinite(deadlineAt)) return 0
+  return Math.max(0, Math.ceil((deadlineAt - now) / 1000))
+}
 
 const getCompletionMessage = phaseId =>
   COMPLETION_MESSAGES[phaseId] || '任务完成'
@@ -292,6 +304,7 @@ module.exports = {
   getPhaseDisplaySeconds,
   getPhaseDurationSeconds,
   getPhaseInfo,
+  getWallClockRemainingSeconds,
   isFlowComplete,
   normalizeSettings,
   shouldSchedulePhaseReminder

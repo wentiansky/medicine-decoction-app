@@ -5,7 +5,6 @@ import android.app.Service
 import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
@@ -13,11 +12,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
@@ -159,49 +154,13 @@ class AlarmOverlayService : Service() {
     }
   }
 
-  private fun createOverlayView(title: String, body: String): LinearLayout {
-    val density = resources.displayMetrics.density
-    val root = LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL
-      gravity = Gravity.CENTER
-      setBackgroundColor(Color.rgb(38, 29, 18))
-      setPadding(
-        (28 * density).toInt(),
-        (28 * density).toInt(),
-        (28 * density).toInt(),
-        (28 * density).toInt()
-      )
-      layoutParams = LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.MATCH_PARENT
-      )
-    }
-
-    val titleView = TextView(this).apply {
-      text = title
-      setTextColor(Color.WHITE)
-      textSize = 30f
-      gravity = Gravity.CENTER
-    }
-
-    val bodyView = TextView(this).apply {
-      text = body
-      setTextColor(Color.rgb(255, 232, 199))
-      textSize = 24f
-      gravity = Gravity.CENTER
-      setPadding(0, (18 * density).toInt(), 0, (34 * density).toInt())
-    }
-
-    val dismissButton = Button(this).apply {
-      text = "我知道了"
-      textSize = 20f
-      setOnClickListener { stopSelf() }
-    }
-
-    val openAppButton = Button(this).apply {
-      text = "打开应用"
-      textSize = 18f
-      setOnClickListener {
+  private fun createOverlayView(title: String, body: String): View =
+    AlarmPresentationViewFactory.create(
+      this,
+      title,
+      body,
+      onDismiss = { stopSelf() },
+      onOpenApp = {
         startActivity(
           Intent(this@AlarmOverlayService, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -211,22 +170,7 @@ class AlarmOverlayService : Service() {
         )
         stopSelf()
       }
-    }
-
-    val buttonParams = LinearLayout.LayoutParams(
-      ViewGroup.LayoutParams.MATCH_PARENT,
-      (56 * density).toInt()
-    ).apply {
-      topMargin = (12 * density).toInt()
-    }
-
-    root.addView(titleView)
-    root.addView(bodyView)
-    root.addView(dismissButton, buttonParams)
-    root.addView(openAppButton, buttonParams)
-
-    return root
-  }
+    ).root
 
   private fun createForegroundNotification(title: String, body: String): Notification {
     return NotificationCompat.Builder(this, AndroidAlarmReceiver.CHANNEL_ID)

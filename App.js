@@ -42,6 +42,7 @@ const {
   getPhaseDurationSeconds,
   getPhaseInfo,
   getPermissionIssueGuide,
+  getWallClockRemainingSeconds,
   isFlowComplete,
   normalizeSettings,
   shouldSchedulePhaseReminder
@@ -66,6 +67,7 @@ export default function App() {
   const scheduledNotificationId = useRef(null)
   const scheduledPhaseRef = useRef(null)
   const phaseDeadlineRef = useRef(null)
+  const countdownDeadlineRef = useRef(null)
   const alarmPermissionStateRef = useRef(null)
   const appStateRef = useRef(AppState.currentState)
   const lastExitAttemptAtRef = useRef(0)
@@ -93,8 +95,8 @@ export default function App() {
   )
   const currentPermissionIssue = permissionGuideState.currentIssue
   const permissionGuidePrimaryIssue = currentPermissionIssue || {
-    id: 'overlay',
-    title: '允许悬浮窗',
+    id: 'lockScreenReminder',
+    title: '锁屏提醒',
     action: 'openOverlaySettings'
   }
   const shouldShowPermissionRecheckButton =
@@ -236,7 +238,11 @@ export default function App() {
       }
       if (
         Platform.OS === 'android' &&
-        (issue.id === 'backgroundPopup' || issue.id === 'lockScreenDisplay')
+        (
+          issue.id === 'backgroundPopup' ||
+          issue.id === 'lockScreenDisplay' ||
+          issue.id === 'lockScreenReminder'
+        )
       ) {
         ToastAndroid.show(
           '进入后点「其他权限」，把「后台弹出界面」「锁屏显示」允许，返回后再确认',
@@ -270,13 +276,6 @@ export default function App() {
         missing: issues.map(issue => issue.id)
       })
 
-      const missingOverlayPermission = issues.some(
-        issue => issue.id === 'overlay'
-      )
-      if (showPermissionGuide && !missingOverlayPermission) {
-        setShowPermissionGuide(false)
-      }
-
       if (issues.length > 0 && showAlert && !permissionGuideDismissed) {
         setShowPermissionGuide(true)
       }
@@ -307,15 +306,17 @@ export default function App() {
     }
   }
 
-  const fillTestSettings = () => {
-    const testSettings = {
-      soakTime: 0.11,
-      highHeatTime: 0.11,
-      lowHeatTime: 0.11
-    }
-    setTempSettings(testSettings)
-    writeLog('info', 'settings', 'test settings filled', testSettings)
-  }
+  const fillTestSettings = __DEV__
+    ? () => {
+        const testSettings = {
+          soakTime: 0.11,
+          highHeatTime: 0.11,
+          lowHeatTime: 0.11
+        }
+        setTempSettings(testSettings)
+        writeLog('info', 'settings', 'test settings filled', testSettings)
+      }
+    : null
 
   const sendImmediateNotification = async phase => {
     const message = getCompletionMessage(phase)
@@ -348,9 +349,7 @@ export default function App() {
 
   const cancelScheduledNotification = async () => {
     const notificationId = scheduledNotificationId.current
-    scheduledNotificationId.current = null
-    scheduledPhaseRef.current = null
-    phaseDeadlineRef.current = null
+    let didCancel = true
 
     if (
       Platform.OS === 'android' &&
@@ -362,6 +361,7 @@ export default function App() {
           NATIVE_ALARM_REQUEST_CODE
         )
       } catch (error) {
+        didCancel = false
         console.warn('Failed to cancel native alarm:', error)
         writeLog('warn', 'alarm', 'failed to cancel native alarm', error)
       }
@@ -373,14 +373,29 @@ export default function App() {
           notificationId
         )
       } catch (error) {
+        didCancel = false
         console.warn('Failed to cancel scheduled notification:', error)
         writeLog('warn', 'notifications', 'failed to cancel scheduled notification', error)
       }
     }
+
+    if (didCancel) {
+      scheduledNotificationId.current = null
+      scheduledPhaseRef.current = null
+      phaseDeadlineRef.current = null
+    }
+
+    return didCancel
   }
 
   const schedulePhaseNotification = async (phaseInfo, seconds) => {
-    await cancelScheduledNotification()
+    const previousReminderCanceled = await cancelScheduledNotification()
+    if (!previousReminderCanceled) {
+      writeLog('warn', 'alarm', 'skipping new reminder because previous reminder cancel failed', {
+        phaseId: phaseInfo.id
+      })
+      return
+    }
 
     try {
       if (
@@ -436,7 +451,7 @@ export default function App() {
     }
   }
 
-  const finishCurrentPhase = () => {
+  const finishCurrentPhase = async () => {
     const phaseToComplete = currentPhase
     const completionMessage = getCompletionMessage(phaseToComplete)
     writeLog('info', 'timer', 'phase finished', {
@@ -448,6 +463,7 @@ export default function App() {
       clearInterval(timerRef.current)
       timerRef.current = null
     }
+    countdownDeadlineRef.current = null
 
     if (appStateRef.current === 'active') {
       const alarmModule = getAndroidAlarmModule()
@@ -456,7 +472,7 @@ export default function App() {
         Platform.OS === 'android' &&
         alarmModule?.presentAlarmNow
       ) {
-        cancelScheduledNotification()
+        await cancelScheduledNotification()
         writeLog('info', 'timer', 'requesting native alarm presentation from active app', {
           phase: phaseToComplete
         })
@@ -467,7 +483,7 @@ export default function App() {
             Alert.alert('熬中药提醒', completionMessage)
           })
       } else {
-        cancelScheduledNotification()
+        await cancelScheduledNotification()
         writeLog('info', 'timer', 'showing in-app fallback alert', {
           phase: phaseToComplete
         })
@@ -515,12 +531,11 @@ export default function App() {
   useEffect(() => {
     if (Platform.OS !== 'android') return
 
-    if (alarmPermissionIssues.length === 0) {
-      setShowPermissionGuide(false)
-      return
-    }
-
-    if (!permissionGuideDismissed && !showLogScreen) {
+    if (
+      alarmPermissionIssues.length > 0 &&
+      !permissionGuideDismissed &&
+      !showLogScreen
+    ) {
       setShowPermissionGuide(true)
     }
   }, [alarmPermissionIssues, permissionGuideDismissed, showLogScreen])
@@ -569,6 +584,7 @@ export default function App() {
   useEffect(() => {
     if (!isRunning || isWaitingForContinue) {
       if (timerRef.current) clearInterval(timerRef.current)
+      countdownDeadlineRef.current = null
       return
     }
 
@@ -581,18 +597,25 @@ export default function App() {
 
     if (timeLeft === 0) {
       const phaseInfo = getPhaseInfo(currentPhase, settings)
-      setTimeLeft(getPhaseDurationSeconds(phaseInfo))
+      const durationSeconds = getPhaseDurationSeconds(phaseInfo)
+      countdownDeadlineRef.current = Date.now() + durationSeconds * 1000
+      setTimeLeft(durationSeconds)
       return
     }
 
+    if (!countdownDeadlineRef.current) {
+      countdownDeadlineRef.current = Date.now() + timeLeft * 1000
+    }
+
     timerRef.current = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) {
-          finishCurrentPhase()
-          return 0
-        }
-        return prev - 1
+      const remaining = getWallClockRemainingSeconds({
+        deadlineAt: countdownDeadlineRef.current
       })
+      if (remaining <= 0) {
+        finishCurrentPhase()
+        return
+      }
+      setTimeLeft(remaining)
     }, 1000)
 
     return () => clearInterval(timerRef.current)
@@ -630,6 +653,7 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current)
+      countdownDeadlineRef.current = null
       cancelScheduledNotification()
     }
   }, [])
@@ -679,7 +703,7 @@ export default function App() {
     setIsWaitingForContinue(false)
     setCurrentPhase(1)
     setTimeLeft(0)
-    phaseDeadlineRef.current = null
+    countdownDeadlineRef.current = null
     cancelScheduledNotification()
   }
 
@@ -690,7 +714,7 @@ export default function App() {
     })
     setIsRunning(false)
     setIsWaitingForContinue(false)
-    phaseDeadlineRef.current = null
+    countdownDeadlineRef.current = null
     cancelScheduledNotification()
   }
 
@@ -746,13 +770,15 @@ export default function App() {
               <Text variant="headlineSmall" style={styles.modalTitle}>
                 配置时间
               </Text>
-              <Button
-                mode="outlined"
-                onPress={fillTestSettings}
-                style={styles.testSettingsButton}
-              >
-                填入测试值 0.11 分钟
-              </Button>
+              {__DEV__ && (
+                <Button
+                  mode="outlined"
+                  onPress={fillTestSettings}
+                  style={styles.testSettingsButton}
+                >
+                  填入测试值 0.11 分钟
+                </Button>
+              )}
               <TextInput
                 label="泡水时间（分钟）"
                 value={tempSettings.soakTime.toString()}
@@ -821,7 +847,7 @@ export default function App() {
                 开启可靠提醒
               </Text>
               <Text variant="bodyMedium" style={styles.permissionGuideText}>
-                为了在不同场景下都及时提醒你，建议按下面两步逐步开启权限。
+                为了在不同场景下都及时提醒你，建议按下面的步骤逐步开启权限。
               </Text>
               {visiblePermissionScenarioCards.map(card => (
                 <View key={card.id} style={styles.permissionScenarioCard}>

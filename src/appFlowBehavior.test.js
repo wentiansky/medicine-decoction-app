@@ -74,14 +74,25 @@ test('permission guide removes step number from lock-screen reminder when overla
   )
 })
 
-test('permission guide closes after overlay permission is enabled', () => {
+test('permission guide falls back to lock-screen instructions after automatic issues are clear', () => {
   assert.match(
     appSource,
-    /issues\.some\([\s\S]*issue => issue\.id === 'overlay'/
+    /currentPermissionIssue \|\| \{[\s\S]*id: 'lockScreenReminder'[\s\S]*action: 'openOverlaySettings'/
   )
   assert.match(
     appSource,
+    /issue\.id === 'lockScreenReminder'/
+  )
+})
+
+test('permission guide stays open after overlay permission is enabled', () => {
+  assert.doesNotMatch(
+    appSource,
     /showPermissionGuide && !missingOverlayPermission/
+  )
+  assert.match(
+    appSource,
+    /alarmPermissionIssues\.length > 0[\s\S]*!permissionGuideDismissed[\s\S]*!showLogScreen[\s\S]*setShowPermissionGuide\(true\)/
   )
 })
 
@@ -116,4 +127,30 @@ test('Android system back closes modals, returns from child pages, then confirms
   assert.match(appSource, /closeLogScreen/)
   assert.match(appSource, /再按一次退出应用/)
   assert.match(appSource, /BackHandler\.exitApp\(\)/)
+})
+
+test('timer phases are memoized and test settings are dev-only', () => {
+  assert.match(
+    appSource,
+    /const phases = useMemo\(\(\) => buildPhases\(settings\), \[settings\]\)/
+  )
+  assert.match(appSource, /const fillTestSettings = __DEV__/)
+  assert.match(appSource, /\{__DEV__ && \(/)
+  assert.match(appSource, /填入测试值 0\.11 分钟/)
+})
+
+test('scheduled reminder refs are cleared only after cancel attempts succeed', () => {
+  const cancelSection =
+    appSource.match(/const cancelScheduledNotification = async \(\) => \{[\s\S]*?\n  \}/)?.[0] || ''
+  const stopTimerSection =
+    appSource.match(/const stopTimer = \(\) => \{[\s\S]*?\n  \}/)?.[0] || ''
+  const pauseTimerSection =
+    appSource.match(/const pauseTimer = \(\) => \{[\s\S]*?\n  \}/)?.[0] || ''
+
+  assert.match(cancelSection, /let didCancel = true/)
+  assert.match(cancelSection, /didCancel = false/)
+  assert.match(cancelSection, /if \(didCancel\) \{[\s\S]*scheduledNotificationId\.current = null[\s\S]*scheduledPhaseRef\.current = null[\s\S]*phaseDeadlineRef\.current = null/)
+  assert.match(cancelSection, /return didCancel/)
+  assert.doesNotMatch(stopTimerSection, /phaseDeadlineRef\.current = null/)
+  assert.doesNotMatch(pauseTimerSection, /phaseDeadlineRef\.current = null/)
 })

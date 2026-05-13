@@ -15,6 +15,7 @@ const {
   getPhaseDurationSeconds,
   getAndroidBackAction,
   getPermissionIssueGuide,
+  getWallClockRemainingSeconds,
   isFlowComplete,
   normalizeSettings,
   shouldSchedulePhaseReminder
@@ -224,6 +225,15 @@ test('getPermissionIssueGuide explains manual lock-screen permission confirmatio
   assert.match(guide.settingHint, /重新检测/)
 })
 
+test('getPermissionIssueGuide explains optional lock-screen reminder as two settings', () => {
+  const guide = getPermissionIssueGuide('lockScreenReminder')
+
+  assert.match(guide.detail, /锁屏/)
+  assert.match(guide.settingHint, /后台弹出界面/)
+  assert.match(guide.settingHint, /锁屏显示/)
+  assert.doesNotMatch(guide.settingHint, /显示悬浮窗/)
+})
+
 test('createPermissionScenarioCards groups missing permissions by reminder scene', () => {
   const cards = createPermissionScenarioCards([
     {
@@ -324,6 +334,23 @@ test('getPhaseDisplaySeconds keeps live countdown while running or paused mid-ph
       isWaitingForContinue: true
     }),
     5
+  )
+})
+
+test('getWallClockRemainingSeconds corrects countdown after delayed ticks', () => {
+  assert.equal(
+    getWallClockRemainingSeconds({
+      deadlineAt: 10_000,
+      now: 4_200
+    }),
+    6
+  )
+  assert.equal(
+    getWallClockRemainingSeconds({
+      deadlineAt: 10_000,
+      now: 10_500
+    }),
+    0
   )
 })
 
