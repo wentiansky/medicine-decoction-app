@@ -9,12 +9,6 @@ const NATIVE_ALARM_REQUEST_CODE = 1001
 
 const ANDROID_ALARM_PERMISSION_ITEMS = [
   {
-    key: 'canScheduleExactAlarms',
-    id: 'exactAlarm',
-    title: '允许设置闹钟和提醒',
-    action: 'openExactAlarmSettings'
-  },
-  {
     key: 'notificationsEnabled',
     id: 'notifications',
     title: '允许通知',
@@ -23,23 +17,42 @@ const ANDROID_ALARM_PERMISSION_ITEMS = [
   {
     key: 'canDrawOverlays',
     id: 'overlay',
-    title: '允许显示在其他应用上层',
+    title: '允许悬浮窗',
     action: 'openOverlaySettings'
   }
 ]
 
-const PERMISSION_GUIDES = {
-  exactAlarm: {
-    detail: '开启后，计时器才能按设定时间准时触发提醒。',
-    settingHint: '进入系统页后，开启本应用的闹钟和提醒权限。'
+const PERMISSION_SCENARIOS = [
+  {
+    id: 'backgroundReminder',
+    title: '步骤 1 后台提醒',
+    detail: '切到后台或浏览其他应用时，需要开启「悬浮窗」权限。',
+    issueIds: ['overlay']
   },
+  {
+    id: 'lockScreenReminder',
+    title: '步骤 2 锁屏提醒',
+    detail: '锁屏或息屏时，需要再开启「后台弹出界面」和「锁屏显示」。',
+    issueIds: ['backgroundPopup', 'lockScreenDisplay']
+  }
+]
+
+const PERMISSION_GUIDES = {
   notifications: {
     detail: '开启后，通知栏会保留阶段完成提醒，方便你回到 App。',
     settingHint: '在系统弹窗或通知设置中选择允许。'
   },
   overlay: {
-    detail: '开启后，时间到时可以用浮窗提醒覆盖当前正在使用的应用。',
-    settingHint: '进入系统页后，点「其他权限」，找到「显示悬浮窗」或「显示在其他应用上层」，选择允许。'
+    detail: '开启后，时间到时可以在你正在使用其他应用时显示覆盖提醒。',
+    settingHint: '进入系统页后，点「其他权限」，开启「显示悬浮窗」或「显示在其他应用上层」。'
+  },
+  backgroundPopup: {
+    detail: '开启「后台弹出界面」后，锁屏时更容易把提醒弹到前台，减少错过提醒的概率。',
+    settingHint: '进入系统页后，点「其他权限」开启「后台弹出界面」；返回应用后点重新检测。'
+  },
+  lockScreenDisplay: {
+    detail: '开启后，锁屏或息屏时更容易在锁屏层显示提醒。',
+    settingHint: '进入系统页后，点「其他权限」开启「锁屏显示」；返回应用后点重新检测。'
   }
 }
 
@@ -173,25 +186,49 @@ const shouldSchedulePhaseReminder = ({
   timeLeft > 0 &&
   scheduledPhase !== currentPhase
 
-const shouldShowInAppFallbackAlert = ({
-  platform,
-  hasNativeAlarmModule,
-  alarmPermissionState
-}) => {
-  if (platform !== 'android' || !hasNativeAlarmModule) {
-    return true
-  }
-
-  return !(
-    alarmPermissionState?.canScheduleExactAlarms === true &&
-    alarmPermissionState?.canDrawOverlays === true
-  )
-}
-
 const createAndroidAlarmPermissionChecklist = state =>
   ANDROID_ALARM_PERMISSION_ITEMS
-    .filter(item => state?.[item.key] === false)
+    .filter(item =>
+      item.key ? state?.[item.key] === false : true
+    )
     .map(({ id, title, action }) => ({ id, title, action }))
+
+const getIssueCountStatusText = count => {
+  if (count <= 0) return '已开启'
+  if (count === 1) return '还差 1 项'
+  return `还差 ${count} 项`
+}
+
+const createPermissionScenarioCards = issues => {
+  const safeIssues = Array.isArray(issues) ? issues : []
+  const issueById = new Map(safeIssues.map(issue => [issue.id, issue]))
+
+  return PERMISSION_SCENARIOS.map(scenario => {
+    const missingIssues =
+      scenario.id === 'backgroundReminder'
+        ? scenario.issueIds
+            .map(issueId => issueById.get(issueId))
+            .filter(Boolean)
+        : []
+    const missingCount = missingIssues.length
+
+    return {
+      id: scenario.id,
+      title: scenario.title,
+      detail: scenario.detail,
+      missingIssueIds: missingIssues.map(issue => issue.id),
+      missingTitles: missingIssues.map(issue => issue.title),
+      completed:
+        scenario.id === 'lockScreenReminder' ? false : missingCount === 0,
+      statusText:
+        scenario.id === 'lockScreenReminder'
+          ? '按需开启'
+          : scenario.id === 'backgroundReminder' && missingCount === 1
+            ? '未开启'
+            : getIssueCountStatusText(missingCount)
+    }
+  })
+}
 
 const createPermissionGuideState = issues => {
   const safeIssues = Array.isArray(issues) ? issues : []
@@ -216,6 +253,28 @@ const completePhase = phaseId => ({
   isWaitingForContinue: phaseId < 7
 })
 
+const getAndroidBackAction = ({
+  showSettingsModal = false,
+  showPermissionGuide = false,
+  showLogScreen = false,
+  lastExitAttemptAt = 0,
+  now = Date.now(),
+  exitConfirmWindowMs = 2000
+} = {}) => {
+  if (showSettingsModal) return { action: 'closeSettingsModal' }
+  if (showPermissionGuide) return { action: 'closePermissionGuide' }
+  if (showLogScreen) return { action: 'closeLogScreen' }
+
+  if (
+    lastExitAttemptAt > 0 &&
+    now - lastExitAttemptAt <= exitConfirmWindowMs
+  ) {
+    return { action: 'exitApp', lastExitAttemptAt: 0 }
+  }
+
+  return { action: 'promptExit', lastExitAttemptAt: now }
+}
+
 module.exports = {
   DEFAULT_SETTINGS,
   NOTIFICATION_CHANNEL_ID,
@@ -225,14 +284,15 @@ module.exports = {
   createAndroidAlarmPermissionChecklist,
   createNativeAlarmRequest,
   createPermissionGuideState,
+  createPermissionScenarioCards,
   createPhaseNotificationRequest,
   getCompletionMessage,
+  getAndroidBackAction,
   getPermissionIssueGuide,
   getPhaseDisplaySeconds,
   getPhaseDurationSeconds,
   getPhaseInfo,
   isFlowComplete,
   normalizeSettings,
-  shouldShowInAppFallbackAlert,
   shouldSchedulePhaseReminder
 }

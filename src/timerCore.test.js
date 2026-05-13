@@ -5,6 +5,7 @@ const {
   NOTIFICATION_CHANNEL_ID,
   buildPhases,
   createAndroidAlarmPermissionChecklist,
+  createPermissionScenarioCards,
   createPhaseNotificationRequest,
   createNativeAlarmRequest,
   createPermissionGuideState,
@@ -12,10 +13,10 @@ const {
   getPhaseDisplaySeconds,
   getPhaseInfo,
   getPhaseDurationSeconds,
+  getAndroidBackAction,
   getPermissionIssueGuide,
   isFlowComplete,
   normalizeSettings,
-  shouldShowInAppFallbackAlert,
   shouldSchedulePhaseReminder
 } = require('./timerCore')
 
@@ -37,6 +38,48 @@ test('normalizeSettings replaces empty or invalid values with defaults', () => {
   assert.deepEqual(
     normalizeSettings({ soakTime: 0, highHeatTime: Number.NaN, lowHeatTime: -3 }),
     { soakTime: 15, highHeatTime: 7, lowHeatTime: 15 }
+  )
+})
+
+test('getAndroidBackAction prioritizes modals, child pages, then double-back exit', () => {
+  assert.deepEqual(
+    getAndroidBackAction({
+      showSettingsModal: true,
+      showPermissionGuide: true,
+      showLogScreen: true,
+      lastExitAttemptAt: 900,
+      now: 1000
+    }),
+    { action: 'closeSettingsModal' }
+  )
+
+  assert.deepEqual(
+    getAndroidBackAction({
+      showPermissionGuide: true,
+      showLogScreen: true,
+      lastExitAttemptAt: 900,
+      now: 1000
+    }),
+    { action: 'closePermissionGuide' }
+  )
+
+  assert.deepEqual(
+    getAndroidBackAction({
+      showLogScreen: true,
+      lastExitAttemptAt: 900,
+      now: 1000
+    }),
+    { action: 'closeLogScreen' }
+  )
+
+  assert.deepEqual(
+    getAndroidBackAction({ lastExitAttemptAt: 0, now: 1000 }),
+    { action: 'promptExit', lastExitAttemptAt: 1000 }
+  )
+
+  assert.deepEqual(
+    getAndroidBackAction({ lastExitAttemptAt: 1000, now: 2500 }),
+    { action: 'exitApp', lastExitAttemptAt: 0 }
   )
 })
 
@@ -113,18 +156,13 @@ test('createAndroidAlarmPermissionChecklist lists missing Android alarm permissi
     }),
     [
       {
-        id: 'exactAlarm',
-        title: '允许设置闹钟和提醒',
-        action: 'openExactAlarmSettings'
-      },
-      {
         id: 'notifications',
         title: '允许通知',
         action: 'openNotificationSettings'
       },
       {
         id: 'overlay',
-        title: '允许显示在其他应用上层',
+        title: '允许悬浮窗',
         action: 'openOverlaySettings'
       }
     ]
@@ -157,25 +195,94 @@ test('createPermissionGuideState points to the next missing permission', () => {
       title: '允许通知',
       action: 'openNotificationSettings'
     },
-    completedCount: 1,
-    totalCount: 3
+    completedCount: 0,
+    totalCount: 2
   })
 })
 
 test('createPermissionGuideState reports complete when no permissions are missing', () => {
   assert.deepEqual(createPermissionGuideState([]), {
     currentIssue: null,
-    completedCount: 3,
-    totalCount: 3
+    completedCount: 2,
+    totalCount: 2
   })
 })
 
 test('getPermissionIssueGuide explains overlay permission steps', () => {
   const guide = getPermissionIssueGuide('overlay')
 
-  assert.match(guide.detail, /浮窗提醒/)
+  assert.match(guide.detail, /其他应用/)
   assert.match(guide.settingHint, /其他权限/)
   assert.match(guide.settingHint, /显示/)
+})
+
+test('getPermissionIssueGuide explains manual lock-screen permission confirmation', () => {
+  const guide = getPermissionIssueGuide('backgroundPopup')
+
+  assert.match(guide.detail, /锁屏/)
+  assert.match(guide.detail, /后台弹出界面/)
+  assert.match(guide.settingHint, /重新检测/)
+})
+
+test('createPermissionScenarioCards groups missing permissions by reminder scene', () => {
+  const cards = createPermissionScenarioCards([
+    {
+      id: 'overlay',
+      title: '允许悬浮窗',
+      action: 'openOverlaySettings'
+    },
+    {
+      id: 'backgroundPopup',
+      title: '允许后台弹出界面',
+      action: 'openOverlaySettings'
+    }
+  ])
+
+  assert.deepEqual(cards, [
+    {
+      id: 'backgroundReminder',
+      title: '步骤 1 后台提醒',
+      detail: '切到后台或浏览其他应用时，需要开启「悬浮窗」权限。',
+      missingIssueIds: ['overlay'],
+      missingTitles: ['允许悬浮窗'],
+      completed: false,
+      statusText: '未开启'
+    },
+    {
+      id: 'lockScreenReminder',
+      title: '步骤 2 锁屏提醒',
+      detail: '锁屏或息屏时，需要再开启「后台弹出界面」和「锁屏显示」。',
+      missingIssueIds: [],
+      missingTitles: [],
+      completed: false,
+      statusText: '按需开启'
+    }
+  ])
+})
+
+test('createPermissionScenarioCards marks background reminder complete when overlay is enabled', () => {
+  const cards = createPermissionScenarioCards([])
+
+  assert.deepEqual(cards, [
+    {
+      id: 'backgroundReminder',
+      title: '步骤 1 后台提醒',
+      detail: '切到后台或浏览其他应用时，需要开启「悬浮窗」权限。',
+      missingIssueIds: [],
+      missingTitles: [],
+      completed: true,
+      statusText: '已开启'
+    },
+    {
+      id: 'lockScreenReminder',
+      title: '步骤 2 锁屏提醒',
+      detail: '锁屏或息屏时，需要再开启「后台弹出界面」和「锁屏显示」。',
+      missingIssueIds: [],
+      missingTitles: [],
+      completed: false,
+      statusText: '按需开启'
+    }
+  ])
 })
 
 test('completePhase advances to the next phase and leaves the timer paused', () => {
@@ -248,43 +355,5 @@ test('shouldSchedulePhaseReminder skips already scheduled current phase', () => 
       scheduledPhase: 2
     }),
     false
-  )
-})
-
-test('shouldShowInAppFallbackAlert skips app alert when Android native overlay alarm can appear', () => {
-  assert.equal(
-    shouldShowInAppFallbackAlert({
-      platform: 'android',
-      hasNativeAlarmModule: true,
-      alarmPermissionState: {
-        canScheduleExactAlarms: true,
-        canDrawOverlays: true
-      }
-    }),
-    false
-  )
-
-  assert.equal(
-    shouldShowInAppFallbackAlert({
-      platform: 'android',
-      hasNativeAlarmModule: true,
-      alarmPermissionState: {
-        canScheduleExactAlarms: true,
-        canDrawOverlays: false
-      }
-    }),
-    true
-  )
-
-  assert.equal(
-    shouldShowInAppFallbackAlert({
-      platform: 'android',
-      hasNativeAlarmModule: true,
-      alarmPermissionState: {
-        canScheduleExactAlarms: false,
-        canDrawOverlays: true
-      }
-    }),
-    true
   )
 })

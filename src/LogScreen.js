@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react'
 import { Alert, Clipboard, ScrollView, StyleSheet, View } from 'react-native'
 import { Button, Card, Checkbox, Text } from 'react-native-paper'
 const { formatLogsForCopy } = require('./appLogger')
+const {
+  DEFAULT_LOG_PAGE_SIZE,
+  getNextVisibleCount,
+  getVisibleLogs
+} = require('./logPagination')
 
 const levelColors = {
   info: '#2563EB',
@@ -20,19 +25,25 @@ const formatTimestamp = timestamp => {
 export default function LogScreen({ logger }) {
   const [logs, setLogs] = useState([])
   const [selectedLogIds, setSelectedLogIds] = useState(new Set())
+  const [visibleCount, setVisibleCount] = useState(DEFAULT_LOG_PAGE_SIZE)
 
-  const selectedLogs = logs.filter(log => selectedLogIds.has(log.id))
+  const visibleLogs = getVisibleLogs(logs, visibleCount)
+  const selectedLogs = visibleLogs.filter(log => selectedLogIds.has(log.id))
   const isSelecting = selectedLogIds.size > 0
+  const hasMoreLogs = visibleLogs.length < logs.length
 
   const loadLogs = async () => {
     const nextLogs = await logger.getLogs()
     setLogs(nextLogs)
+    setVisibleCount(DEFAULT_LOG_PAGE_SIZE)
+    setSelectedLogIds(new Set())
   }
 
   const clearLogs = async () => {
     await logger.clearLogs()
     setLogs([])
     setSelectedLogIds(new Set())
+    setVisibleCount(DEFAULT_LOG_PAGE_SIZE)
   }
 
   const toggleLogSelection = logId => {
@@ -48,7 +59,7 @@ export default function LogScreen({ logger }) {
   }
 
   const selectAllLogs = () => {
-    setSelectedLogIds(new Set(logs.map(log => log.id)))
+    setSelectedLogIds(new Set(visibleLogs.map(log => log.id)))
   }
 
   const cancelSelection = () => {
@@ -60,6 +71,10 @@ export default function LogScreen({ logger }) {
 
     Clipboard.setString(formatLogsForCopy(selectedLogs))
     Alert.alert('已复制', `已复制 ${selectedLogs.length} 条日志`)
+  }
+
+  const loadMoreLogs = () => {
+    setVisibleCount(current => getNextVisibleCount(current, logs.length))
   }
 
   useEffect(() => {
@@ -107,7 +122,13 @@ export default function LogScreen({ logger }) {
 
       {isSelecting && (
         <Text variant="labelMedium" style={styles.selectionCount}>
-          已选择 {selectedLogs.length} 条
+          已选择 {selectedLogs.length} 条，当前页 {visibleLogs.length}/{logs.length} 条
+        </Text>
+      )}
+
+      {!isSelecting && logs.length > 0 && (
+        <Text variant="labelMedium" style={styles.selectionCount}>
+          当前显示 {visibleLogs.length}/{logs.length} 条
         </Text>
       )}
 
@@ -121,7 +142,7 @@ export default function LogScreen({ logger }) {
             </Card.Content>
           </Card>
         ) : (
-          logs.map(log => (
+          visibleLogs.map(log => (
             <Card
               key={log.id}
               style={[
@@ -165,6 +186,16 @@ export default function LogScreen({ logger }) {
             </Card>
           ))
         )}
+
+        {hasMoreLogs ? (
+          <Button
+            mode="outlined"
+            onPress={loadMoreLogs}
+            style={styles.loadMoreButton}
+          >
+            加载更多日志
+          </Button>
+        ) : null}
       </ScrollView>
     </View>
   )
@@ -235,5 +266,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#F3F4F6',
     color: '#374151',
     fontSize: 12
+  },
+  loadMoreButton: {
+    marginVertical: 16
   }
 })

@@ -5,6 +5,7 @@ import {
   View,
   ScrollView,
   Alert,
+  BackHandler,
   Platform,
   AppState,
   NativeModules,
@@ -33,15 +34,16 @@ const {
   createAndroidAlarmPermissionChecklist,
   createNativeAlarmRequest,
   createPermissionGuideState,
+  createPermissionScenarioCards,
   createPhaseNotificationRequest,
   getCompletionMessage,
+  getAndroidBackAction,
   getPhaseDisplaySeconds,
   getPhaseDurationSeconds,
   getPhaseInfo,
   getPermissionIssueGuide,
   isFlowComplete,
   normalizeSettings,
-  shouldShowInAppFallbackAlert,
   shouldSchedulePhaseReminder
 } = require('./src/timerCore')
 
@@ -66,6 +68,7 @@ export default function App() {
   const phaseDeadlineRef = useRef(null)
   const alarmPermissionStateRef = useRef(null)
   const appStateRef = useRef(AppState.currentState)
+  const lastExitAttemptAtRef = useRef(0)
   const phases = useMemo(() => buildPhases(settings), [settings])
   const flowComplete = isFlowComplete(currentPhase)
   const displaySeconds = getPhaseDisplaySeconds({
@@ -78,8 +81,26 @@ export default function App() {
     () => createPermissionGuideState(alarmPermissionIssues),
     [alarmPermissionIssues]
   )
+  const permissionScenarioCards = useMemo(
+    () => createPermissionScenarioCards(alarmPermissionIssues),
+    [alarmPermissionIssues]
+  )
+  const hasPendingBackgroundReminder = permissionScenarioCards.some(
+    card => card.id === 'backgroundReminder' && !card.completed
+  )
+  const visiblePermissionScenarioCards = permissionScenarioCards.filter(
+    card => hasPendingBackgroundReminder || card.id === 'lockScreenReminder'
+  )
+  const currentPermissionIssue = permissionGuideState.currentIssue
+  const permissionGuidePrimaryIssue = currentPermissionIssue || {
+    id: 'overlay',
+    title: '允许悬浮窗',
+    action: 'openOverlaySettings'
+  }
+  const shouldShowPermissionRecheckButton =
+    currentPermissionIssue?.id === 'overlay'
   const currentPermissionGuide = getPermissionIssueGuide(
-    permissionGuideState.currentIssue?.id
+    permissionGuidePrimaryIssue.id
   )
 
   if (!appLoggerRef.current) {
@@ -209,7 +230,16 @@ export default function App() {
       writeLog('info', 'permissions', 'opening Android alarm setting', issue)
       if (Platform.OS === 'android' && issue.id === 'overlay') {
         ToastAndroid.show(
-          '进入后点「其他权限」，再开启「显示悬浮窗」',
+          '先开启「显示悬浮窗」；如果系统里还有「后台弹出界面」「锁屏显示」，后面也一并开启',
+          ToastAndroid.LONG
+        )
+      }
+      if (
+        Platform.OS === 'android' &&
+        (issue.id === 'backgroundPopup' || issue.id === 'lockScreenDisplay')
+      ) {
+        ToastAndroid.show(
+          '进入后点「其他权限」，把「后台弹出界面」「锁屏显示」允许，返回后再确认',
           ToastAndroid.LONG
         )
       }
@@ -240,8 +270,14 @@ export default function App() {
         missing: issues.map(issue => issue.id)
       })
 
-      if (issues.length > 0 && showAlert) {
-        setPermissionGuideDismissed(false)
+      const missingOverlayPermission = issues.some(
+        issue => issue.id === 'overlay'
+      )
+      if (showPermissionGuide && !missingOverlayPermission) {
+        setShowPermissionGuide(false)
+      }
+
+      if (issues.length > 0 && showAlert && !permissionGuideDismissed) {
         setShowPermissionGuide(true)
       }
 
@@ -402,6 +438,7 @@ export default function App() {
 
   const finishCurrentPhase = () => {
     const phaseToComplete = currentPhase
+    const completionMessage = getCompletionMessage(phaseToComplete)
     writeLog('info', 'timer', 'phase finished', {
       phase: phaseToComplete,
       appState: appStateRef.current
@@ -413,25 +450,28 @@ export default function App() {
     }
 
     if (appStateRef.current === 'active') {
-      const showInAppFallback = shouldShowInAppFallbackAlert({
-        platform: Platform.OS,
-        hasNativeAlarmModule: Boolean(getAndroidAlarmModule()?.scheduleAlarm),
-        alarmPermissionState: alarmPermissionStateRef.current
-      })
+      const alarmModule = getAndroidAlarmModule()
 
-      if (showInAppFallback) {
+      if (
+        Platform.OS === 'android' &&
+        alarmModule?.presentAlarmNow
+      ) {
+        cancelScheduledNotification()
+        writeLog('info', 'timer', 'requesting native alarm presentation from active app', {
+          phase: phaseToComplete
+        })
+        alarmModule
+          .presentAlarmNow('熬中药提醒', completionMessage)
+          .catch(error => {
+            writeLog('error', 'alarm', 'failed to present native alarm from active app', error)
+            Alert.alert('熬中药提醒', completionMessage)
+          })
+      } else {
         cancelScheduledNotification()
         writeLog('info', 'timer', 'showing in-app fallback alert', {
           phase: phaseToComplete
         })
-        Alert.alert('熬中药提醒', getCompletionMessage(phaseToComplete))
-      } else {
-        scheduledNotificationId.current = null
-        scheduledPhaseRef.current = null
-        phaseDeadlineRef.current = null
-        writeLog('info', 'timer', 'in-app fallback alert skipped for native alarm', {
-          phase: phaseToComplete
-        })
+        Alert.alert('熬中药提醒', completionMessage)
       }
     } else {
       scheduledPhaseRef.current = null
@@ -484,6 +524,47 @@ export default function App() {
       setShowPermissionGuide(true)
     }
   }, [alarmPermissionIssues, permissionGuideDismissed, showLogScreen])
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return
+
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      const backAction = getAndroidBackAction({
+        showSettingsModal,
+        showPermissionGuide,
+        showLogScreen,
+        lastExitAttemptAt: lastExitAttemptAtRef.current
+      })
+
+      if (backAction.action === 'closeSettingsModal') {
+        setShowSettingsModal(false)
+        return true
+      }
+
+      if (backAction.action === 'closePermissionGuide') {
+        setPermissionGuideDismissed(true)
+        setShowPermissionGuide(false)
+        return true
+      }
+
+      if (backAction.action === 'closeLogScreen') {
+        setShowLogScreen(false)
+        return true
+      }
+
+      if (backAction.action === 'exitApp') {
+        lastExitAttemptAtRef.current = backAction.lastExitAttemptAt
+        BackHandler.exitApp()
+        return true
+      }
+
+      lastExitAttemptAtRef.current = backAction.lastExitAttemptAt
+      ToastAndroid.show('再按一次退出应用', ToastAndroid.SHORT)
+      return true
+    })
+
+    return () => subscription.remove()
+  }, [showSettingsModal, showPermissionGuide, showLogScreen])
 
   useEffect(() => {
     if (!isRunning || isWaitingForContinue) {
@@ -561,12 +642,9 @@ export default function App() {
     })
     const issues = await refreshAndroidAlarmPermissions({ showAlert: true })
     if (issues.length > 0) {
-      setPermissionGuideDismissed(false)
-      setShowPermissionGuide(true)
-      writeLog('warn', 'timer', 'start blocked by missing permissions', {
+      writeLog('warn', 'timer', 'start continuing with missing permissions', {
         missing: issues.map(issue => issue.id)
       })
-      return
     }
 
     if (currentPhase > 7) {
@@ -581,12 +659,9 @@ export default function App() {
     writeLog('info', 'timer', 'restart requested')
     const issues = await refreshAndroidAlarmPermissions({ showAlert: true })
     if (issues.length > 0) {
-      setPermissionGuideDismissed(false)
-      setShowPermissionGuide(true)
-      writeLog('warn', 'timer', 'restart blocked by missing permissions', {
+      writeLog('warn', 'timer', 'restart continuing with missing permissions', {
         missing: issues.map(issue => issue.id)
       })
-      return
     }
 
     setCurrentPhase(1)
@@ -624,8 +699,6 @@ export default function App() {
     const secs = seconds % 60
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
   }
-
-  const currentPermissionIssue = permissionGuideState.currentIssue
 
   return (
     <SafeAreaProvider>
@@ -736,7 +809,6 @@ export default function App() {
             <Modal
               visible={
                 showPermissionGuide &&
-                Boolean(currentPermissionIssue) &&
                 !showSettingsModal
               }
               onDismiss={() => {
@@ -749,14 +821,46 @@ export default function App() {
                 开启可靠提醒
               </Text>
               <Text variant="bodyMedium" style={styles.permissionGuideText}>
-                为了在熬药时间到时及时提醒你，即使正在使用其他应用或手机锁屏，也需要开启必要提醒权限。
+                为了在不同场景下都及时提醒你，建议按下面两步逐步开启权限。
               </Text>
-              <Text variant="bodyMedium" style={styles.permissionGuideText}>
-                {currentPermissionGuide.detail}
-              </Text>
-              <Text variant="labelLarge" style={styles.permissionGuideProgress}>
-                已完成 {permissionGuideState.completedCount} / {permissionGuideState.totalCount}
-              </Text>
+              {visiblePermissionScenarioCards.map(card => (
+                <View key={card.id} style={styles.permissionScenarioCard}>
+                  <View style={styles.permissionScenarioHeader}>
+                    <Text style={styles.permissionScenarioTitle}>
+                      {card.id === 'lockScreenReminder' && !hasPendingBackgroundReminder
+                        ? '锁屏提醒'
+                        : card.title}
+                    </Text>
+                    <View
+                      style={[
+                        styles.permissionScenarioBadge,
+                        card.completed
+                          ? styles.permissionScenarioBadgeDone
+                          : styles.permissionScenarioBadgePending
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.permissionScenarioBadgeText,
+                          card.completed
+                            ? styles.permissionScenarioBadgeTextDone
+                            : styles.permissionScenarioBadgeTextPending
+                        ]}
+                      >
+                        {card.statusText}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text style={styles.permissionScenarioDetail}>{card.detail}</Text>
+                  {card.id === 'lockScreenReminder' &&
+                  !card.completed &&
+                  card.missingTitles.length > 0 ? (
+                    <Text style={styles.permissionScenarioMissing}>
+                      还需开启：{card.missingTitles.join('、')}
+                    </Text>
+                  ) : null}
+                </View>
+              ))}
               <View style={styles.permissionGuideHint}>
                 <Text style={styles.permissionGuideHintTitle}>
                   下一步怎么操作
@@ -765,30 +869,22 @@ export default function App() {
                   {currentPermissionGuide.settingHint}
                 </Text>
               </View>
-              <View style={styles.permissionStepList}>
-                {alarmPermissionIssues.map((issue, index) => (
-                  <View key={issue.id} style={styles.permissionStep}>
-                    <Text style={styles.permissionStepIndex}>
-                      {index === 0 ? '当前' : '待开'}
-                    </Text>
-                    <Text style={styles.permissionStepText}>{issue.title}</Text>
-                  </View>
-                ))}
-              </View>
               <Button
                 mode="contained"
-                onPress={() => openAndroidAlarmSetting(currentPermissionIssue)}
+                onPress={() => openAndroidAlarmSetting(permissionGuidePrimaryIssue)}
                 style={styles.permissionGuideButton}
               >
-                去开启：{currentPermissionIssue?.title}
+                去开启权限
               </Button>
-              <Button
-                mode="outlined"
-                onPress={() => refreshAndroidAlarmPermissions()}
-                style={styles.permissionGuideButton}
-              >
-                我已开启，重新检测
-              </Button>
+              {shouldShowPermissionRecheckButton ? (
+                <Button
+                  mode="outlined"
+                  onPress={() => refreshAndroidAlarmPermissions()}
+                  style={styles.permissionGuideButton}
+                >
+                  重新检测
+                </Button>
+              ) : null}
               <Button
                 mode="text"
                 onPress={() => {
@@ -803,27 +899,27 @@ export default function App() {
           </Portal>
 
           <ScrollView style={styles.content}>
-            {currentPermissionIssue && (
-              <Card style={styles.permissionCard}>
-                <Card.Content>
-                  <Text variant="titleMedium" style={styles.permissionTitle}>
-                    提醒权限还差一步
-                  </Text>
-                  <Text style={styles.permissionText}>
-                    开启后，时间到时可以准时响铃、振动并保留通知提醒。
-                  </Text>
-                  <Button
-                    mode="contained"
-                    onPress={() => {
-                      setPermissionGuideDismissed(false)
-                      setShowPermissionGuide(true)
-                    }}
-                    style={styles.permissionButton}
-                  >
-                    设置提醒权限
-                  </Button>
-                </Card.Content>
-              </Card>
+            {Platform.OS === 'android' && (
+              <View style={styles.permissionBanner}>
+                <View style={styles.permissionBannerIcon}>
+                  <Text style={styles.permissionBannerIconText}>权</Text>
+                </View>
+                <Text
+                  style={styles.permissionBannerText}
+                  numberOfLines={1}
+                >
+                  后台/锁屏提醒权限可按需开启
+                </Text>
+                <Button
+                  mode="contained-tonal"
+                  compact
+                  onPress={() => setShowPermissionGuide(true)}
+                  style={styles.permissionBannerButton}
+                  labelStyle={styles.permissionBannerButtonLabel}
+                >
+                  开启
+                </Button>
+              </View>
             )}
 
             {flowComplete ? (
@@ -1048,21 +1144,44 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#333'
   },
-  permissionCard: {
-    marginBottom: 16,
-    backgroundColor: '#FFF8E1'
+  permissionBanner: {
+    minHeight: 46,
+    marginBottom: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10
   },
-  permissionTitle: {
-    marginBottom: 8,
-    color: '#B45309',
+  permissionBannerIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#E0F2FE'
+  },
+  permissionBannerIconText: {
+    color: '#0369A1',
+    fontSize: 13,
     fontWeight: 'bold'
   },
-  permissionText: {
-    marginBottom: 4,
-    color: '#4B5563'
+  permissionBannerText: {
+    flex: 1,
+    color: '#374151',
+    fontSize: 14
   },
-  permissionButton: {
-    marginTop: 12
+  permissionBannerButton: {
+    borderRadius: 8
+  },
+  permissionBannerButtonLabel: {
+    marginHorizontal: 10,
+    marginVertical: 3,
+    fontSize: 13
   },
   permissionGuide: {
     margin: 20,
@@ -1080,9 +1199,54 @@ const styles = StyleSheet.create({
     color: '#4B5563',
     lineHeight: 22
   },
-  permissionGuideProgress: {
-    marginBottom: 10,
-    color: '#1976D2'
+  permissionScenarioCard: {
+    marginBottom: 12,
+    padding: 14,
+    borderRadius: 10,
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: '#E5E7EB'
+  },
+  permissionScenarioHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 8
+  },
+  permissionScenarioTitle: {
+    flex: 1,
+    color: '#111827',
+    fontWeight: 'bold'
+  },
+  permissionScenarioBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999
+  },
+  permissionScenarioBadgeDone: {
+    backgroundColor: '#DCFCE7'
+  },
+  permissionScenarioBadgePending: {
+    backgroundColor: '#FEF3C7'
+  },
+  permissionScenarioBadgeText: {
+    fontSize: 12,
+    fontWeight: 'bold'
+  },
+  permissionScenarioBadgeTextDone: {
+    color: '#166534'
+  },
+  permissionScenarioBadgeTextPending: {
+    color: '#B45309'
+  },
+  permissionScenarioDetail: {
+    color: '#4B5563',
+    lineHeight: 21
+  },
+  permissionScenarioMissing: {
+    marginTop: 8,
+    color: '#92400E'
   },
   permissionGuideHint: {
     marginBottom: 14,
@@ -1098,23 +1262,6 @@ const styles = StyleSheet.create({
   permissionGuideHintText: {
     color: '#1F2937',
     lineHeight: 21
-  },
-  permissionStepList: {
-    marginBottom: 14
-  },
-  permissionStep: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8
-  },
-  permissionStepIndex: {
-    width: 46,
-    color: '#1976D2',
-    fontWeight: 'bold'
-  },
-  permissionStepText: {
-    flex: 1,
-    color: '#374151'
   },
   permissionGuideButton: {
     marginTop: 10
