@@ -217,50 +217,6 @@ class AndroidAlarmModule(
     }
   }
 
-  @ReactMethod
-  fun presentAlarmNow(title: String, body: String, promise: Promise) {
-    try {
-      AndroidAlarmReceiver.ensureNotificationChannel(reactContext)
-
-      AndroidAlarmReceiver.postAlarmNotification(
-        reactContext,
-        title,
-        body
-      )
-
-      reactContext.startActivity(
-        AndroidAlarmReceiver.createAlarmActivityIntent(reactContext, title, body)
-      )
-
-      AndroidAlarmDebugLog.append(
-        reactContext,
-        "info",
-        "alarm",
-        "immediate alarm activity start requested from app",
-        JSONObject().apply {
-          put("title", title)
-          put("body", body)
-          put("route", "direct-activity")
-        }
-      )
-
-      promise.resolve(true)
-    } catch (error: Exception) {
-      AndroidAlarmDebugLog.append(
-        reactContext,
-        "error",
-        "alarm",
-        "immediate alarm activity start failed from app",
-        JSONObject().apply {
-          put("title", title)
-          put("body", body)
-          put("error", error.message ?: error.javaClass.simpleName)
-        }
-      )
-      promise.reject("ERR_ANDROID_ALARM_PRESENT", error)
-    }
-  }
-
   private fun createAlarmActivityPendingIntent(
     requestCode: Int,
     title: String,
@@ -273,6 +229,10 @@ class AndroidAlarmModule(
         Intent.FLAG_ACTIVITY_CLEAR_TOP
       putExtra(AndroidAlarmReceiver.EXTRA_TITLE, title)
       putExtra(AndroidAlarmReceiver.EXTRA_BODY, body)
+      putExtra(
+        AndroidAlarmReceiver.EXTRA_LAUNCH_SOURCE,
+        AndroidAlarmReceiver.LAUNCH_SOURCE_EXTERNAL
+      )
     }
 
     return PendingIntent.getActivity(

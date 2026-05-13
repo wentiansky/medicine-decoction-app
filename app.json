@@ -17,8 +17,7 @@
         "expo-notifications",
         {
           "icon": "./assets/icon.png",
-          "color": "#ffffff",
-          "defaultChannel": "medicine-decoction-timer"
+          "color": "#ffffff"
         }
       ]
     ],

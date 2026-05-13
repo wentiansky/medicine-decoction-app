@@ -8,13 +8,15 @@ const timerFlowHookSource = fs.readFileSync(
   'utf8'
 )
 
-test('active phase completion requests native alarm presentation before in-app fallback', () => {
-  assert.match(timerFlowHookSource, /presentAlarmNow\('熬中药提醒', completionMessage\)/)
-  assert.match(
-    timerFlowHookSource,
-    /await cancelScheduledNotification\(\)[\s\S]*presentAlarmNow\('熬中药提醒', completionMessage\)/
-  )
-  assert.match(timerFlowHookSource, /requesting native alarm presentation from active app/)
-  assert.match(timerFlowHookSource, /failed to present native alarm from active app/)
-  assert.doesNotMatch(timerFlowHookSource, /shouldShowInAppFallbackAlert/)
+test('active phase completion does not present a second alarm from JavaScript', () => {
+  const finishCurrentPhaseSection =
+    timerFlowHookSource.match(/const finishCurrentPhase = async \(\) => \{[\s\S]*?\n  \}/)?.[0] || ''
+
+  assert.match(finishCurrentPhaseSection, /phase finished/)
+  assert.match(finishCurrentPhaseSection, /completePhase\(phaseToComplete\)/)
+  assert.doesNotMatch(finishCurrentPhaseSection, /presentAlarmNow/)
+  assert.doesNotMatch(finishCurrentPhaseSection, /requesting native alarm presentation from active app/)
+  assert.doesNotMatch(finishCurrentPhaseSection, /failed to present native alarm from active app/)
+  assert.doesNotMatch(finishCurrentPhaseSection, /Alert\.alert\('熬中药提醒', completionMessage\)/)
+  assert.doesNotMatch(finishCurrentPhaseSection, /await cancelScheduledNotification\(\)/)
 })

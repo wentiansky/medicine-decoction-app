@@ -15,6 +15,7 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import org.json.JSONArray
 import org.json.JSONObject
 
 class AndroidAlarmReceiver : BroadcastReceiver() {
@@ -35,16 +36,34 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
       }
     )
 
-    val openLockScreenAlarm = shouldOpenLockScreenAlarm(context)
+    val appInForeground = AppForegroundTracker.isMainActivityForeground
+    val openLockScreenAlarm = !appInForeground && shouldOpenLockScreenAlarm(context)
     val canDrawOverlays = AlarmOverlayService.canDrawOverlays(context)
-    val canAttachFullScreenIntent = !canDrawOverlays && canUseFullScreenIntent(context)
+    val canAttachFullScreenIntent = !appInForeground && !canDrawOverlays && canUseFullScreenIntent(context)
     val shouldUseFullScreenIntent = openLockScreenAlarm && canAttachFullScreenIntent
+    val shouldAlertNotification = !appInForeground && !openLockScreenAlarm && !canDrawOverlays
     val fullScreenPendingIntent = if (canAttachFullScreenIntent) {
-      createAlarmActivityPendingIntent(context, title, body)
+      createAlarmActivityPendingIntent(
+        context,
+        title,
+        body,
+        requestCode = REQUEST_CODE + 5
+      )
     } else {
       null
     }
-    val notificationLaunchPendingIntent = createAlarmActivityPendingIntent(context, title, body)
+    val notificationLaunchSource = if (appInForeground) {
+      LAUNCH_SOURCE_IN_APP
+    } else {
+      LAUNCH_SOURCE_EXTERNAL
+    }
+    val notificationLaunchPendingIntent = createAlarmActivityPendingIntent(
+      context,
+      title,
+      body,
+      launchSource = notificationLaunchSource,
+      dismissNotificationOnOpen = true
+    )
 
     AndroidAlarmDebugLog.append(
       context,
@@ -55,25 +74,29 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
         put(
           "route",
           when {
+            appInForeground -> "notification-first-foreground-activity"
             openLockScreenAlarm -> "notification-first-lock-screen-activity"
             canDrawOverlays -> "notification-first-overlay"
-            else -> "notification-first-background-activity"
+            else -> "notification-first-heads-up"
           }
         )
+        put("appInForeground", appInForeground)
         put("openLockScreenAlarm", openLockScreenAlarm)
         put("canDrawOverlays", canDrawOverlays)
         put("canAttachFullScreenIntent", canAttachFullScreenIntent)
         put("shouldUseFullScreenIntent", shouldUseFullScreenIntent)
+        put("shouldAlertNotification", shouldAlertNotification)
       }
     )
 
-    // 无论是否有悬浮窗权限，都保留正式闹钟通知作为可回溯入口。
+    // Activity/浮窗自己负责响铃；只有无浮窗且后台未锁屏时，让 heads-up 通知响铃和振动。
     postAlarmNotification(
       context,
       title,
       body,
       notificationLaunchPendingIntent,
-      fullScreenPendingIntent
+      fullScreenPendingIntent,
+      alertNotification = shouldAlertNotification
     )
 
     if (openLockScreenAlarm && !shouldUseFullScreenIntent && !canDrawOverlays) {
@@ -86,7 +109,7 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
     }
 
     // 解锁状态下再用浮窗补充提醒，避免把 overlay 当成锁屏主路径。
-    if (!openLockScreenAlarm && canDrawOverlays) {
+    if (!appInForeground && !openLockScreenAlarm && canDrawOverlays) {
       try {
         AlarmOverlayService.start(context, title, body)
         AndroidAlarmDebugLog.append(
@@ -106,6 +129,13 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
           }
         )
       }
+    } else if (appInForeground) {
+      AndroidAlarmDebugLog.append(
+        context,
+        "info",
+        "alarm",
+        "alarm overlay skipped because foreground activity is the primary route"
+      )
     } else if (!openLockScreenAlarm) {
       AndroidAlarmDebugLog.append(
         context,
@@ -122,8 +152,35 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
       )
     }
 
-    // 锁屏时仍然直接拉起全屏闹钟页；后台未锁屏且无悬浮窗时交给通知点击进入。
-    if (openLockScreenAlarm) {
+    // 前台应用内直接展示 Activity；后台未锁屏且无悬浮窗时只交给 heads-up 通知点击进入。
+    if (appInForeground) {
+      try {
+        context.startActivity(
+          createAlarmActivityIntent(
+            context,
+            title,
+            body,
+            AndroidAlarmReceiver.LAUNCH_SOURCE_IN_APP
+          )
+        )
+        AndroidAlarmDebugLog.append(
+          context,
+          "info",
+          "alarm",
+          "foreground alarm activity start requested"
+        )
+      } catch (error: Exception) {
+        AndroidAlarmDebugLog.append(
+          context,
+          "error",
+          "alarm",
+          "foreground alarm activity start failed",
+          JSONObject().apply {
+            put("error", error.message ?: error.javaClass.simpleName)
+          }
+        )
+      }
+    } else if (openLockScreenAlarm) {
       try {
         context.startActivity(createAlarmActivityIntent(context, title, body))
         AndroidAlarmDebugLog.append(
@@ -153,6 +210,10 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
     const val NOTIFICATION_ID = 2001
     const val EXTRA_TITLE = "title"
     const val EXTRA_BODY = "body"
+    const val EXTRA_LAUNCH_SOURCE = "launch_source"
+    const val EXTRA_DISMISS_NOTIFICATION_ON_OPEN = "dismiss_notification_on_open"
+    const val LAUNCH_SOURCE_EXTERNAL = "external"
+    const val LAUNCH_SOURCE_IN_APP = "in_app"
 
     private fun acquireWakeLock(context: Context) {
       try {
@@ -191,7 +252,8 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
       title: String,
       body: String,
       launchPendingIntent: PendingIntent = createAppLaunchPendingIntent(context),
-      fullScreenPendingIntent: PendingIntent? = null
+      fullScreenPendingIntent: PendingIntent? = null,
+      alertNotification: Boolean = true
     ) {
       ensureNotificationChannel(context)
 
@@ -203,11 +265,17 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
         .setPriority(NotificationCompat.PRIORITY_MAX)
         .setCategory(NotificationCompat.CATEGORY_ALARM)
         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-        .setDefaults(NotificationCompat.DEFAULT_ALL)
-        .setVibrate(longArrayOf(0, 700, 250, 700, 250, 700))
         .setOngoing(false)
         .setAutoCancel(true)
         .setContentIntent(launchPendingIntent)
+
+      if (alertNotification) {
+        notificationBuilder
+          .setDefaults(NotificationCompat.DEFAULT_ALL)
+          .setVibrate(longArrayOf(0, 700, 250, 700, 250, 700))
+      } else {
+        notificationBuilder.setSilent(true)
+      }
 
       if (fullScreenPendingIntent != null) {
         notificationBuilder.setFullScreenIntent(fullScreenPendingIntent, true)
@@ -244,13 +312,21 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
     fun pendingIntentImmutableFlag(): Int =
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
 
-    fun createAlarmActivityIntent(context: Context, title: String, body: String): Intent =
+    fun createAlarmActivityIntent(
+      context: Context,
+      title: String,
+      body: String,
+      launchSource: String = LAUNCH_SOURCE_EXTERNAL,
+      dismissNotificationOnOpen: Boolean = false
+    ): Intent =
       Intent(context, AlarmAlertActivity::class.java).apply {
         flags = Intent.FLAG_ACTIVITY_NEW_TASK or
           Intent.FLAG_ACTIVITY_SINGLE_TOP or
           Intent.FLAG_ACTIVITY_CLEAR_TOP
         putExtra(EXTRA_TITLE, title)
         putExtra(EXTRA_BODY, body)
+        putExtra(EXTRA_LAUNCH_SOURCE, launchSource)
+        putExtra(EXTRA_DISMISS_NOTIFICATION_ON_OPEN, dismissNotificationOnOpen)
       }
 
     fun shouldOpenLockScreenAlarm(context: Context): Boolean {
@@ -289,12 +365,21 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
     fun createAlarmActivityPendingIntent(
       context: Context,
       title: String,
-      body: String
+      body: String,
+      launchSource: String = LAUNCH_SOURCE_EXTERNAL,
+      dismissNotificationOnOpen: Boolean = false,
+      requestCode: Int = REQUEST_CODE + 4
     ): PendingIntent {
       return PendingIntent.getActivity(
         context,
-        REQUEST_CODE + 4,
-        createAlarmActivityIntent(context, title, body),
+        requestCode,
+        createAlarmActivityIntent(
+          context,
+          title,
+          body,
+          launchSource = launchSource,
+          dismissNotificationOnOpen = dismissNotificationOnOpen
+        ),
         PendingIntent.FLAG_UPDATE_CURRENT or pendingIntentImmutableFlag(),
         createAlarmActivityPendingIntentOptions()
       )
@@ -303,6 +388,7 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
     fun ensureNotificationChannel(context: Context) {
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
 
+      val alarmVibrationPattern = longArrayOf(0, 700, 250, 700, 250, 700)
       val channel = NotificationChannel(
         CHANNEL_ID,
         "熬中药计时提醒",
@@ -310,20 +396,40 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
       ).apply {
         description = "熬中药阶段完成提醒"
         lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+        setVibrationPattern(alarmVibrationPattern)
         enableVibration(true)
-        vibrationPattern = longArrayOf(0, 700, 250, 700, 250, 700)
         setSound(
           android.provider.Settings.System.DEFAULT_ALARM_ALERT_URI,
           AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_ALARM)
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
-        )
+          )
       }
 
-      context
-        .getSystemService(NotificationManager::class.java)
-        .createNotificationChannel(channel)
+      val notificationManager = context.getSystemService(NotificationManager::class.java)
+      notificationManager.createNotificationChannel(channel)
+
+      val actualChannel = notificationManager.getNotificationChannel(CHANNEL_ID)
+      AndroidAlarmDebugLog.append(
+        context,
+        "info",
+        "alarm",
+        "alarm notification channel ensured",
+        JSONObject().apply {
+          if (actualChannel == null) {
+            put("missing", true)
+          } else {
+            put("importance", actualChannel.importance)
+            put("shouldVibrate", actualChannel.shouldVibrate())
+            put(
+              "vibrationPattern",
+              actualChannel.vibrationPattern?.let { JSONArray(it.toList()) }
+            )
+            put("sound", actualChannel.sound?.toString())
+          }
+        }
+      )
     }
 
     private fun createAlarmActivityPendingIntentOptions(): Bundle? {

@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.view.WindowManager
 import android.widget.TextView
+import androidx.core.app.NotificationManagerCompat
 import org.json.JSONObject
 
 class AlarmAlertActivity : Activity() {
@@ -41,6 +42,7 @@ class AlarmAlertActivity : Activity() {
       }
     )
 
+    dismissNotificationIfRequested(intent)
     AlarmOverlayService.stop(this)
     updateAlarmContent(title, body)
     startAlarmSignal()
@@ -71,6 +73,7 @@ class AlarmAlertActivity : Activity() {
     configureLockScreenWindow()
     val title = getAlarmTitle(intent)
     val body = getAlarmBody(intent)
+    dismissNotificationIfRequested(intent)
     AlarmOverlayService.stop(this)
     updateAlarmContent(title, body)
     startAlarmSignal()
@@ -142,12 +145,22 @@ class AlarmAlertActivity : Activity() {
 
   private fun dismissAlarm() {
     stopAlarmSignal()
-    moveTaskToBack(true)
+    val returnToPreviousApp = shouldReturnToPreviousApp(intent)
+    if (returnToPreviousApp) {
+      moveTaskToBack(true)
+    } else {
+      returnToApp()
+    }
     finish()
   }
 
   private fun openApp() {
     stopAlarmSignal()
+    returnToApp()
+    finish()
+  }
+
+  private fun returnToApp() {
     startActivity(
       Intent(this, MainActivity::class.java).apply {
         flags = Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -155,7 +168,6 @@ class AlarmAlertActivity : Activity() {
           Intent.FLAG_ACTIVITY_CLEAR_TOP
       }
     )
-    finish()
   }
 
   private fun startAlarmSignal() {
@@ -168,6 +180,26 @@ class AlarmAlertActivity : Activity() {
   private fun stopAlarmSignal() {
     alarmSignal?.stop()
     alarmSignal = null
+  }
+
+  private fun shouldReturnToPreviousApp(intent: Intent?): Boolean =
+    intent?.getStringExtra(AndroidAlarmReceiver.EXTRA_LAUNCH_SOURCE) !=
+      AndroidAlarmReceiver.LAUNCH_SOURCE_IN_APP
+
+  private fun dismissNotificationIfRequested(intent: Intent?) {
+    if (intent?.getBooleanExtra(
+        AndroidAlarmReceiver.EXTRA_DISMISS_NOTIFICATION_ON_OPEN,
+        false
+      ) != true
+    ) {
+      return
+    }
+
+    NotificationManagerCompat.from(this).cancel(AndroidAlarmReceiver.NOTIFICATION_ID)
+    logActivityEvent(
+      "info",
+      "alarm notification dismissed after notification tap"
+    )
   }
 
   private fun captureKeyguardState(): JSONObject {

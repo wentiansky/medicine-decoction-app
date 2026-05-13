@@ -162,18 +162,30 @@ class AlarmOverlayService : Service() {
       this,
       title,
       body,
-      onDismiss = { stopSelf() },
-      onOpenApp = {
-        startActivity(
-          Intent(this@AlarmOverlayService, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-              Intent.FLAG_ACTIVITY_SINGLE_TOP or
-              Intent.FLAG_ACTIVITY_CLEAR_TOP
-          }
-        )
-        stopSelf()
-      }
+      onDismiss = { dismissOverlayButKeepNotification() },
+      onOpenApp = { openAppButKeepNotification() }
     ).root
+
+  private fun dismissOverlayButKeepNotification() {
+    stopAlarmSignal()
+    removeOverlay()
+    detachForegroundNotification()
+    stopSelf()
+  }
+
+  private fun openAppButKeepNotification() {
+    stopAlarmSignal()
+    removeOverlay()
+    detachForegroundNotification()
+    startActivity(
+      Intent(this@AlarmOverlayService, MainActivity::class.java).apply {
+        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+          Intent.FLAG_ACTIVITY_SINGLE_TOP or
+          Intent.FLAG_ACTIVITY_CLEAR_TOP
+      }
+    )
+    stopSelf()
+  }
 
   private fun createForegroundNotification(title: String, body: String): Notification {
     return NotificationCompat.Builder(this, AndroidAlarmReceiver.CHANNEL_ID)
@@ -182,10 +194,28 @@ class AlarmOverlayService : Service() {
       .setContentText(body)
       .setPriority(NotificationCompat.PRIORITY_DEFAULT)
       .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-      .setOngoing(true)
+      .setOngoing(false)
+      .setAutoCancel(true)
       .setSilent(true)
-      .setContentIntent(AndroidAlarmReceiver.createAppLaunchPendingIntent(this))
+      .setContentIntent(
+        AndroidAlarmReceiver.createAlarmActivityPendingIntent(
+          this,
+          title,
+          body,
+          launchSource = AndroidAlarmReceiver.LAUNCH_SOURCE_IN_APP,
+          dismissNotificationOnOpen = true
+        )
+      )
       .build()
+  }
+
+  private fun detachForegroundNotification() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+      stopForeground(STOP_FOREGROUND_DETACH)
+    } else {
+      @Suppress("DEPRECATION")
+      stopForeground(false)
+    }
   }
 
   private fun removeOverlay() {

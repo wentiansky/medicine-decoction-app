@@ -4,7 +4,6 @@ import { getAndroidAlarmModule } from '../androidAlarmScheduler'
 
 const {
   NATIVE_ALARM_REQUEST_CODE,
-  NOTIFICATION_CHANNEL_ID,
   buildPhases,
   completePhase,
   createNativeAlarmRequest,
@@ -59,7 +58,7 @@ export default function useTimerFlow({
     }
 
     try {
-      writeLog('info', 'notifications', 'initializing notification channel')
+      writeLog('info', 'notifications', 'initializing notifications')
       const Notifications = await import('expo-notifications')
       notificationsRef.current = Notifications
       Notifications.setNotificationHandler({
@@ -71,24 +70,6 @@ export default function useTimerFlow({
           priority: Notifications.AndroidNotificationPriority.MAX
         })
       })
-
-      if (Platform.OS === 'android') {
-        await Notifications.setNotificationChannelAsync(
-          NOTIFICATION_CHANNEL_ID,
-          {
-            name: '熬中药计时提醒',
-            importance: Notifications.AndroidImportance.MAX,
-            enableVibrate: true,
-            vibrationPattern: [0, 500, 250, 500],
-            audioAttributes: {
-              usage: Notifications.AndroidAudioUsage.ALARM,
-              contentType: Notifications.AndroidAudioContentType.SONIFICATION
-            },
-            lockscreenVisibility:
-              Notifications.AndroidNotificationVisibility.PUBLIC
-          }
-        )
-      }
 
       const { status } = await Notifications.requestPermissionsAsync()
       const granted = status === 'granted'
@@ -108,7 +89,11 @@ export default function useTimerFlow({
   const sendImmediateNotification = async phase => {
     const message = getCompletionMessage(phase)
 
-    if (notificationSupported && notificationsRef.current) {
+    if (
+      Platform.OS !== 'android' &&
+      notificationSupported &&
+      notificationsRef.current
+    ) {
       try {
         await notificationsRef.current.scheduleNotificationAsync({
           content: {
@@ -117,10 +102,7 @@ export default function useTimerFlow({
             sound: 'default',
             priority: 'max'
           },
-          trigger:
-            Platform.OS === 'android'
-              ? { channelId: NOTIFICATION_CHANNEL_ID }
-              : null
+          trigger: null
         })
         return
       } catch (error) {
@@ -233,7 +215,6 @@ export default function useTimerFlow({
 
   const finishCurrentPhase = async () => {
     const phaseToComplete = currentPhase
-    const completionMessage = getCompletionMessage(phaseToComplete)
     writeLog('info', 'timer', 'phase finished', {
       phase: phaseToComplete,
       appState: appStateRef.current
@@ -245,28 +226,7 @@ export default function useTimerFlow({
     }
     countdownDeadlineRef.current = null
 
-    if (appStateRef.current === 'active') {
-      const alarmModule = getAndroidAlarmModule()
-
-      if (alarmModule?.presentAlarmNow) {
-        await cancelScheduledNotification()
-        writeLog('info', 'timer', 'requesting native alarm presentation from active app', {
-          phase: phaseToComplete
-        })
-        alarmModule
-          .presentAlarmNow('熬中药提醒', completionMessage)
-          .catch(error => {
-            writeLog('error', 'alarm', 'failed to present native alarm from active app', error)
-            Alert.alert('熬中药提醒', completionMessage)
-          })
-      } else {
-        await cancelScheduledNotification()
-        writeLog('info', 'timer', 'showing in-app fallback alert', {
-          phase: phaseToComplete
-        })
-        Alert.alert('熬中药提醒', completionMessage)
-      }
-    } else {
+    if (appStateRef.current !== 'active') {
       scheduledPhaseRef.current = null
       phaseDeadlineRef.current = null
     }
@@ -299,11 +259,38 @@ export default function useTimerFlow({
         finishCurrentPhase()
       }
 
+      if (nextAppState !== 'active' && isRunning && !isWaitingForContinue) {
+        const remaining = countdownDeadlineRef.current
+          ? getWallClockRemainingSeconds({
+              deadlineAt: countdownDeadlineRef.current
+            })
+          : timeLeft
+        const shouldScheduleBackgroundReminder =
+          currentPhase <= 7 &&
+          remaining > 0 &&
+          scheduledPhaseRef.current !== currentPhase
+
+        if (shouldScheduleBackgroundReminder) {
+          const phaseInfo = getPhaseInfo(currentPhase, settings)
+          writeLog('info', 'alarm', 'scheduling native alarm after app left foreground', {
+            phaseId: currentPhase,
+            remaining
+          })
+          schedulePhaseNotification(phaseInfo, remaining)
+        }
+      }
+
       appStateRef.current = nextAppState
     })
 
     return () => subscription.remove()
-  }, [isRunning, currentPhase])
+  }, [
+    isRunning,
+    isWaitingForContinue,
+    currentPhase,
+    timeLeft,
+    settings
+  ])
 
   useEffect(() => {
     if (!isRunning || isWaitingForContinue) {

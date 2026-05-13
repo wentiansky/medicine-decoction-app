@@ -39,6 +39,10 @@ const timerCoreSource = fs.readFileSync(
   path.join(__dirname, 'timerCore.js'),
   'utf8'
 )
+const appJsonSource = fs.readFileSync(
+  path.join(__dirname, '..', 'app.json'),
+  'utf8'
+)
 
 test('timer start and restart are not blocked by missing alarm permissions', () => {
   assert.match(timerFlowHookSource, /start continuing with missing permissions/)
@@ -85,6 +89,11 @@ test('App shell imports shared styles instead of defining a giant inline StyleSh
   assert.match(appSource, /import styles from '\.\/src\/styles\/appStyles'/)
   assert.doesNotMatch(appSource, /const styles = StyleSheet\.create\(/)
   assert.match(appStylesSource, /const styles = StyleSheet\.create\(/)
+})
+
+test('Expo notifications do not create or claim the Android alarm channel', () => {
+  assert.doesNotMatch(timerFlowHookSource, /setNotificationChannelAsync/)
+  assert.doesNotMatch(appJsonSource, /"defaultChannel"/)
 })
 
 test('permission guide presents progressive background and lock-screen reminder copy', () => {
@@ -203,4 +212,19 @@ test('scheduled reminder refs are cleared only after cancel attempts succeed', (
   assert.match(cancelSection, /return didCancel/)
   assert.doesNotMatch(stopTimerSection, /phaseDeadlineRef\.current = null/)
   assert.doesNotMatch(pauseTimerSection, /phaseDeadlineRef\.current = null/)
+})
+
+test('native phase reminders stay aligned when the app leaves the foreground', () => {
+  assert.match(
+    timerFlowHookSource,
+    /if \(!shouldSchedulePhaseReminder\([\s\S]*scheduledPhase: scheduledPhaseRef\.current[\s\S]*const phaseInfo = getPhaseInfo\(currentPhase, settings\)[\s\S]*schedulePhaseNotification\(phaseInfo, timeLeft\)/
+  )
+  assert.match(
+    timerFlowHookSource,
+    /nextAppState !== 'active' && isRunning && !isWaitingForContinue[\s\S]*getWallClockRemainingSeconds\([\s\S]*deadlineAt: countdownDeadlineRef\.current[\s\S]*scheduledPhaseRef\.current !== currentPhase[\s\S]*schedulePhaseNotification\(phaseInfo, remaining\)/
+  )
+  assert.doesNotMatch(
+    timerFlowHookSource,
+    /nextAppState === 'active'[\s\S]*Date\.now\(\) < phaseDeadlineRef\.current[\s\S]*cancelScheduledNotification\(\)/
+  )
 })

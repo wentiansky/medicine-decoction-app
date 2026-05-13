@@ -121,7 +121,8 @@ test('getPhaseInfo returns normalized phase metadata by id', () => {
   })
 })
 
-test('createPhaseNotificationRequest uses a schedulable time interval trigger and alarm channel', () => {
+test('createPhaseNotificationRequest uses a schedulable time interval trigger without the native alarm channel', () => {
+  assert.equal(NOTIFICATION_CHANNEL_ID, 'medicine-decoction-timer')
   assert.deepEqual(createPhaseNotificationRequest(getPhaseInfo(2), 120), {
     content: {
       title: '熬中药提醒',
@@ -133,7 +134,6 @@ test('createPhaseNotificationRequest uses a schedulable time interval trigger an
       type: 'timeInterval',
       seconds: 120,
       repeats: false,
-      channelId: NOTIFICATION_CHANNEL_ID
     }
   })
 })

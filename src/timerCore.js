@@ -164,8 +164,7 @@ const createPhaseNotificationRequest = (phaseInfo, seconds) => ({
   trigger: {
     type: 'timeInterval',
     seconds: Math.max(1, Math.round(Number.parseFloat(seconds)) || 1),
-    repeats: false,
-    channelId: NOTIFICATION_CHANNEL_ID
+    repeats: false
   }
 })
 
