@@ -32,8 +32,7 @@ const PERMISSION_SCENARIOS = [
   {
     id: 'lockScreenReminder',
     title: '步骤 2 锁屏提醒',
-    detail: '锁屏或息屏时，需要再开启「后台弹出界面」和「锁屏显示」。',
-    issueIds: ['backgroundPopup', 'lockScreenDisplay']
+    detail: '锁屏或息屏时，需要再开启「后台弹出界面」和「锁屏显示」。'
   }
 ]
 
@@ -45,14 +44,6 @@ const PERMISSION_GUIDES = {
   overlay: {
     detail: '开启后，时间到时可以在你正在使用其他应用时显示覆盖提醒。',
     settingHint: '进入系统页后，点「其他权限」，开启「显示悬浮窗」或「显示在其他应用上层」。'
-  },
-  backgroundPopup: {
-    detail: '开启「后台弹出界面」后，锁屏时更容易把提醒弹到前台，减少错过提醒的概率。',
-    settingHint: '进入系统页后，点「其他权限」开启「后台弹出界面」；返回应用后点重新检测。'
-  },
-  lockScreenDisplay: {
-    detail: '开启后，锁屏或息屏时更容易在锁屏层显示提醒。',
-    settingHint: '进入系统页后，点「其他权限」开启「锁屏显示」；返回应用后点重新检测。'
   },
   lockScreenReminder: {
     detail: '锁屏或息屏时，需要再开启「后台弹出界面」和「锁屏显示」。',
@@ -246,9 +237,7 @@ const createPermissionGuideState = issues => {
   const safeIssues = Array.isArray(issues) ? issues : []
 
   return {
-    currentIssue: safeIssues[0] || null,
-    completedCount: Math.max(0, ANDROID_ALARM_PERMISSION_ITEMS.length - safeIssues.length),
-    totalCount: ANDROID_ALARM_PERMISSION_ITEMS.length
+    currentIssue: safeIssues[0] || null
   }
 }
 

@@ -195,17 +195,13 @@ test('createPermissionGuideState points to the next missing permission', () => {
       id: 'notifications',
       title: '允许通知',
       action: 'openNotificationSettings'
-    },
-    completedCount: 0,
-    totalCount: 2
+    }
   })
 })
 
 test('createPermissionGuideState reports complete when no permissions are missing', () => {
   assert.deepEqual(createPermissionGuideState([]), {
-    currentIssue: null,
-    completedCount: 2,
-    totalCount: 2
+    currentIssue: null
   })
 })
 
@@ -215,14 +211,6 @@ test('getPermissionIssueGuide explains overlay permission steps', () => {
   assert.match(guide.detail, /其他应用/)
   assert.match(guide.settingHint, /其他权限/)
   assert.match(guide.settingHint, /显示/)
-})
-
-test('getPermissionIssueGuide explains manual lock-screen permission confirmation', () => {
-  const guide = getPermissionIssueGuide('backgroundPopup')
-
-  assert.match(guide.detail, /锁屏/)
-  assert.match(guide.detail, /后台弹出界面/)
-  assert.match(guide.settingHint, /重新检测/)
 })
 
 test('getPermissionIssueGuide explains optional lock-screen reminder as two settings', () => {
