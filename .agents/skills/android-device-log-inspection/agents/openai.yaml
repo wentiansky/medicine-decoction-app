@@ -1,0 +1,6 @@
+interface:
+  display_name: "Android Device Logs"
+  short_description: "Inspect this app's logs and Android device state"
+  default_prompt: "Use $android-device-log-inspection to inspect logs from my connected Android device."
+policy:
+  allow_implicit_invocation: true
