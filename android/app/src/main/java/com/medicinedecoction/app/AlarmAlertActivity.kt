@@ -142,6 +142,7 @@ class AlarmAlertActivity : Activity() {
 
   private fun dismissAlarm() {
     stopAlarmSignal()
+    moveTaskToBack(true)
     finish()
   }
 

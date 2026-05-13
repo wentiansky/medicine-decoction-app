@@ -37,12 +37,14 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
 
     val openLockScreenAlarm = shouldOpenLockScreenAlarm(context)
     val canDrawOverlays = AlarmOverlayService.canDrawOverlays(context)
-    val canUseFullScreenIntent = canUseFullScreenIntent(context)
-    val fullScreenPendingIntent = if (canUseFullScreenIntent) {
+    val canAttachFullScreenIntent = !canDrawOverlays && canUseFullScreenIntent(context)
+    val shouldUseFullScreenIntent = openLockScreenAlarm && canAttachFullScreenIntent
+    val fullScreenPendingIntent = if (canAttachFullScreenIntent) {
       createAlarmActivityPendingIntent(context, title, body)
     } else {
       null
     }
+    val notificationLaunchPendingIntent = createAlarmActivityPendingIntent(context, title, body)
 
     AndroidAlarmDebugLog.append(
       context,
@@ -55,20 +57,26 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
           when {
             openLockScreenAlarm -> "notification-first-lock-screen-activity"
             canDrawOverlays -> "notification-first-overlay"
-            canUseFullScreenIntent -> "notification-first-background-activity"
-            else -> "notification-first-background-activity-without-full-screen-permission"
+            else -> "notification-first-background-activity"
           }
         )
         put("openLockScreenAlarm", openLockScreenAlarm)
         put("canDrawOverlays", canDrawOverlays)
-        put("canUseFullScreenIntent", canUseFullScreenIntent)
+        put("canAttachFullScreenIntent", canAttachFullScreenIntent)
+        put("shouldUseFullScreenIntent", shouldUseFullScreenIntent)
       }
     )
 
-    // 先发系统通知/全屏通知，保证锁屏上有可见的系统提醒入口。
-    postAlarmNotification(context, title, body, fullScreenPendingIntent)
+    // 无论是否有悬浮窗权限，都保留正式闹钟通知作为可回溯入口。
+    postAlarmNotification(
+      context,
+      title,
+      body,
+      notificationLaunchPendingIntent,
+      fullScreenPendingIntent
+    )
 
-    if (!canUseFullScreenIntent) {
+    if (openLockScreenAlarm && !shouldUseFullScreenIntent && !canDrawOverlays) {
       AndroidAlarmDebugLog.append(
         context,
         "warn",
@@ -103,7 +111,7 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
         context,
         "info",
         "alarm",
-        "alarm overlay skipped because background activity is the primary route"
+        "alarm overlay skipped because notification tap is the primary route"
       )
     } else {
       AndroidAlarmDebugLog.append(
@@ -114,52 +122,22 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
       )
     }
 
-    if (!openLockScreenAlarm && !canDrawOverlays && fullScreenPendingIntent != null) {
-      try {
-        fullScreenPendingIntent.send()
-        AndroidAlarmDebugLog.append(
-          context,
-          "info",
-          "alarm",
-          "background full-screen pending intent send requested"
-        )
-      } catch (error: PendingIntent.CanceledException) {
-        AndroidAlarmDebugLog.append(
-          context,
-          "error",
-          "alarm",
-          "background full-screen pending intent send failed",
-          JSONObject().apply {
-            put("error", error.message ?: error.javaClass.simpleName)
-          }
-        )
-      }
-    }
-
-    // Activity 仍然是主路径之一：锁屏时直接拉起，后台未锁屏且无悬浮窗时也主动尝试。
-    if (openLockScreenAlarm || !canDrawOverlays) {
+    // 锁屏时仍然直接拉起全屏闹钟页；后台未锁屏且无悬浮窗时交给通知点击进入。
+    if (openLockScreenAlarm) {
       try {
         context.startActivity(createAlarmActivityIntent(context, title, body))
         AndroidAlarmDebugLog.append(
           context,
           "info",
           "alarm",
-          if (openLockScreenAlarm) {
-            "lock screen alarm activity start requested"
-          } else {
-            "background alarm activity start requested"
-          }
+          "lock screen alarm activity start requested"
         )
       } catch (error: Exception) {
         AndroidAlarmDebugLog.append(
           context,
           "error",
           "alarm",
-          if (openLockScreenAlarm) {
-            "lock screen alarm activity start failed"
-          } else {
-            "background alarm activity start failed"
-          },
+          "lock screen alarm activity start failed",
           JSONObject().apply {
             put("error", error.message ?: error.javaClass.simpleName)
           }
@@ -212,11 +190,11 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
       context: Context,
       title: String,
       body: String,
+      launchPendingIntent: PendingIntent = createAppLaunchPendingIntent(context),
       fullScreenPendingIntent: PendingIntent? = null
     ) {
       ensureNotificationChannel(context)
 
-      val launchPendingIntent = createAppLaunchPendingIntent(context)
       val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID)
         .setSmallIcon(android.R.drawable.ic_dialog_info)
         .setContentTitle(title)
@@ -227,8 +205,8 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .setDefaults(NotificationCompat.DEFAULT_ALL)
         .setVibrate(longArrayOf(0, 700, 250, 700, 250, 700))
-        .setOngoing(true)
-        .setAutoCancel(false)
+        .setOngoing(false)
+        .setAutoCancel(true)
         .setContentIntent(launchPendingIntent)
 
       if (fullScreenPendingIntent != null) {

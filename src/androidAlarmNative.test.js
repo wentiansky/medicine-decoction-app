@@ -98,6 +98,7 @@ test('native alarm flow keeps explicit diagnostics for lock-screen activity life
   assert.match(activitySource, /alarm activity keyguard state captured/)
   assert.match(activitySource, /AlarmSignalController\(this, "alarm activity"/)
   assert.match(activitySource, /AlarmOverlayService\.stop\(this\)/)
+  assert.match(activitySource, /moveTaskToBack\(true\)/)
   assert.doesNotMatch(activitySource, /AndroidAlarmReceiver\.postAlarmNotification\(this, title, body\)/)
 })
 
@@ -115,9 +116,75 @@ test('native alarm flow keeps explicit diagnostics for overlay service startup',
   assert.match(serviceSource, /alarm overlay service start issued/)
   assert.match(serviceSource, /alarm overlay lock screen fallback sound and vibration kept while waiting for lock-screen activity/)
   assert.match(receiverSource, /alarm overlay skipped because lock-screen activity is the primary route/)
-  assert.match(receiverSource, /alarm overlay skipped because background activity is the primary route/)
-  assert.match(receiverSource, /background full-screen pending intent send requested/)
-  assert.match(receiverSource, /background alarm activity start requested/)
+  assert.match(receiverSource, /alarm overlay skipped because notification tap is the primary route/)
   assert.match(receiverSource, /notification-first-background-activity/)
   assert.doesNotMatch(receiverSource, /notification-first-lock-screen-overlay-activity/)
+  assert.doesNotMatch(receiverSource, /background full-screen pending intent send requested/)
+  assert.doesNotMatch(receiverSource, /background alarm activity start requested/)
+})
+
+test('native alarm flow keeps heads-up notifications even when overlay permission is enabled', () => {
+  const serviceSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AlarmOverlayService.kt'
+  )
+  const receiverSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AndroidAlarmReceiver.kt'
+  )
+
+  assert.match(
+    receiverSource,
+    /postAlarmNotification\([\s\S]*notificationLaunchPendingIntent[\s\S]*fullScreenPendingIntent[\s\S]*\)/
+  )
+  assert.doesNotMatch(receiverSource, /alarm notification skipped because overlay permission is enabled/)
+  assert.match(receiverSource, /val notificationLaunchPendingIntent = createAlarmActivityPendingIntent\(context, title, body\)/)
+  assert.match(serviceSource, /setPriority\(NotificationCompat\.PRIORITY_DEFAULT\)/)
+  assert.doesNotMatch(serviceSource, /setPriority\(NotificationCompat\.PRIORITY_MAX\)/)
+  assert.doesNotMatch(serviceSource, /setCategory\(NotificationCompat\.CATEGORY_ALARM\)/)
+})
+
+test('background alarm notifications without overlay permission open the alarm activity from the notification tap', () => {
+  const receiverSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AndroidAlarmReceiver.kt'
+  )
+
+  assert.match(receiverSource, /val notificationLaunchPendingIntent = createAlarmActivityPendingIntent\(context, title, body\)/)
+  assert.match(
+    receiverSource,
+    /val canAttachFullScreenIntent = !canDrawOverlays && canUseFullScreenIntent\(context\)[\s\S]*val fullScreenPendingIntent = if \(canAttachFullScreenIntent\) \{[\s\S]*createAlarmActivityPendingIntent\(context, title, body\)/
+  )
+  assert.match(receiverSource, /\.setContentIntent\(launchPendingIntent\)/)
+  assert.doesNotMatch(
+    receiverSource,
+    /if \(!openLockScreenAlarm && !canDrawOverlays && fullScreenPendingIntent != null\)/
+  )
+  assert.doesNotMatch(
+    receiverSource,
+    /if \(openLockScreenAlarm \|\| !canDrawOverlays\)/
+  )
+})
+
+test('formal alarm notification is one-shot and dismisses itself after the user taps it', () => {
+  const receiverSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AndroidAlarmReceiver.kt'
+  )
+  const serviceSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AlarmOverlayService.kt'
+  )
+
+  assert.match(receiverSource, /\.setOngoing\(false\)/)
+  assert.match(receiverSource, /\.setAutoCancel\(true\)/)
+  assert.match(serviceSource, /\.setOngoing\(true\)/)
+  assert.match(serviceSource, /\.setSilent\(true\)/)
+})
+
+test('overlay foreground service reuses the same notification id so only one notification stays visible', () => {
+  const serviceSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AlarmOverlayService.kt'
+  )
+
+  assert.match(
+    serviceSource,
+    /startForeground\([\s\S]*AndroidAlarmReceiver\.NOTIFICATION_ID,[\s\S]*createForegroundNotification\(title, body\)[\s\S]*\)/
+  )
+  assert.doesNotMatch(serviceSource, /private const val OVERLAY_NOTIFICATION_ID = 2002/)
 })

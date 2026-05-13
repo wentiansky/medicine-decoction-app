@@ -54,7 +54,10 @@ class AlarmOverlayService : Service() {
     )
 
     AndroidAlarmReceiver.ensureNotificationChannel(this)
-    startForeground(OVERLAY_NOTIFICATION_ID, createForegroundNotification(title, body))
+    startForeground(
+      AndroidAlarmReceiver.NOTIFICATION_ID,
+      createForegroundNotification(title, body)
+    )
     AndroidAlarmDebugLog.append(
       this,
       "info",
@@ -177,10 +180,10 @@ class AlarmOverlayService : Service() {
       .setSmallIcon(android.R.drawable.ic_dialog_info)
       .setContentTitle(title)
       .setContentText(body)
-      .setPriority(NotificationCompat.PRIORITY_MAX)
-      .setCategory(NotificationCompat.CATEGORY_ALARM)
+      .setPriority(NotificationCompat.PRIORITY_DEFAULT)
       .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
       .setOngoing(true)
+      .setSilent(true)
       .setContentIntent(AndroidAlarmReceiver.createAppLaunchPendingIntent(this))
       .build()
   }
@@ -208,8 +211,6 @@ class AlarmOverlayService : Service() {
   }
 
   companion object {
-    private const val OVERLAY_NOTIFICATION_ID = 2002
-
     fun canDrawOverlays(context: Context): Boolean =
       Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context)
 
