@@ -215,6 +215,27 @@ test('native alarm notification channel explicitly enables vibration and logs ac
   assert.match(receiverSource, /alarm notification channel ensured/)
 })
 
+test('native alarm signal marks direct vibrations with alarm usage for background delivery', () => {
+  const signalSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AlarmSignalController.kt'
+  )
+
+  assert.match(signalSource, /VibrationAttributes\.USAGE_ALARM/)
+  assert.match(signalSource, /AudioAttributes\.USAGE_ALARM/)
+  assert.match(
+    signalSource,
+    /vibrator\?\.vibrate\([\s\S]*effect,[\s\S]*VibrationAttributes\.createForUsage\(VibrationAttributes\.USAGE_ALARM\)[\s\S]*\)/
+  )
+  assert.match(
+    signalSource,
+    /vibrator\?\.vibrate\(effect, createAlarmAudioAttributes\(\)\)/
+  )
+  assert.match(
+    signalSource,
+    /vibrator\?\.vibrate\(pattern, 0, createAlarmAudioAttributes\(\)\)/
+  )
+})
+
 test('background alarm notifications without overlay permission open the alarm activity from the notification tap', () => {
   const receiverSource = readAndroidSource(
     'android/app/src/main/java/com/medicinedecoction/app/AndroidAlarmReceiver.kt'

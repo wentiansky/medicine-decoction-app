@@ -1,10 +1,12 @@
 package com.medicinedecoction.app
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.VibrationEffect
+import android.os.VibrationAttributes
 import android.os.Vibrator
 import android.os.VibratorManager
 import org.json.JSONObject
@@ -64,10 +66,19 @@ class AlarmSignalController(
 
       val pattern = longArrayOf(0, 900, 300, 900, 300, 900, 700)
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        vibrator?.vibrate(VibrationEffect.createWaveform(pattern, 0))
+        val effect = VibrationEffect.createWaveform(pattern, 0)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+          vibrator?.vibrate(
+            effect,
+            VibrationAttributes.createForUsage(VibrationAttributes.USAGE_ALARM)
+          )
+        } else {
+          @Suppress("DEPRECATION")
+          vibrator?.vibrate(effect, createAlarmAudioAttributes())
+        }
       } else {
         @Suppress("DEPRECATION")
-        vibrator?.vibrate(pattern, 0)
+        vibrator?.vibrate(pattern, 0, createAlarmAudioAttributes())
       }
       AndroidAlarmDebugLog.append(context, "info", "alarm", "$logPrefix vibration started")
     } catch (error: Exception) {
@@ -82,4 +93,10 @@ class AlarmSignalController(
       )
     }
   }
+
+  private fun createAlarmAudioAttributes(): AudioAttributes =
+    AudioAttributes.Builder()
+      .setUsage(AudioAttributes.USAGE_ALARM)
+      .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+      .build()
 }
