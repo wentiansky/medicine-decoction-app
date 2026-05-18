@@ -44,6 +44,7 @@ class AlarmAlertActivity : Activity() {
 
     dismissNotificationIfRequested(intent)
     AlarmOverlayService.stop(this)
+    AlarmNotificationService.stop(this)
     updateAlarmContent(title, body)
     startAlarmSignal()
   }
@@ -75,6 +76,7 @@ class AlarmAlertActivity : Activity() {
     val body = getAlarmBody(intent)
     dismissNotificationIfRequested(intent)
     AlarmOverlayService.stop(this)
+    AlarmNotificationService.stop(this)
     updateAlarmContent(title, body)
     startAlarmSignal()
   }

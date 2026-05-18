@@ -108,6 +108,28 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
       )
     }
 
+    if (shouldAlertNotification) {
+      try {
+        AlarmNotificationService.start(context, title, body)
+        AndroidAlarmDebugLog.append(
+          context,
+          "info",
+          "alarm",
+          "alarm notification service start requested"
+        )
+      } catch (error: Exception) {
+        AndroidAlarmDebugLog.append(
+          context,
+          "error",
+          "alarm",
+          "alarm notification service start failed",
+          JSONObject().apply {
+            put("error", error.message ?: error.javaClass.simpleName)
+          }
+        )
+      }
+    }
+
     // 解锁状态下再用浮窗补充提醒，避免把 overlay 当成锁屏主路径。
     if (!appInForeground && !openLockScreenAlarm && canDrawOverlays) {
       try {
@@ -206,6 +228,7 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
   companion object {
     const val ACTION_FIRE = "com.medicinedecoction.app.ACTION_ALARM_FIRE"
     const val CHANNEL_ID = "medicine-decoction-timer"
+    const val CHANNEL_ID_SILENT_NOTIFICATION_SERVICE = "medicine-decoction-notification-service"
     const val REQUEST_CODE = 1001
     const val NOTIFICATION_ID = 2001
     const val EXTRA_TITLE = "title"
@@ -406,11 +429,24 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
             .build()
           )
       }
+      val silentNotificationServiceChannel = NotificationChannel(
+        CHANNEL_ID_SILENT_NOTIFICATION_SERVICE,
+        "熬中药提醒进行中",
+        NotificationManager.IMPORTANCE_LOW
+      ).apply {
+        description = "熬中药提醒进行中的常驻通知"
+        lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+        enableVibration(false)
+        setSound(null, null)
+      }
 
       val notificationManager = context.getSystemService(NotificationManager::class.java)
       notificationManager.createNotificationChannel(channel)
+      notificationManager.createNotificationChannel(silentNotificationServiceChannel)
 
       val actualChannel = notificationManager.getNotificationChannel(CHANNEL_ID)
+      val actualSilentNotificationServiceChannel =
+        notificationManager.getNotificationChannel(CHANNEL_ID_SILENT_NOTIFICATION_SERVICE)
       AndroidAlarmDebugLog.append(
         context,
         "info",
@@ -427,6 +463,18 @@ class AndroidAlarmReceiver : BroadcastReceiver() {
               actualChannel.vibrationPattern?.let { JSONArray(it.toList()) }
             )
             put("sound", actualChannel.sound?.toString())
+            put(
+              "silentNotificationServiceImportance",
+              actualSilentNotificationServiceChannel?.importance
+            )
+            put(
+              "silentNotificationServiceShouldVibrate",
+              actualSilentNotificationServiceChannel?.shouldVibrate()
+            )
+            put(
+              "silentNotificationServiceSound",
+              actualSilentNotificationServiceChannel?.sound?.toString()
+            )
           }
         }
       )

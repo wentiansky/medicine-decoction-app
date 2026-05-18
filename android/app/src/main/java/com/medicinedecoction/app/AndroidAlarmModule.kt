@@ -211,6 +211,7 @@ class AndroidAlarmModule(
         ""
       ))
       alarmManager.cancel(createMainActivityPendingIntent(requestCode.toInt()))
+      AlarmNotificationService.stop(reactContext)
       promise.resolve(null)
     } catch (error: Exception) {
       promise.reject("ERR_ANDROID_ALARM_CANCEL", error)

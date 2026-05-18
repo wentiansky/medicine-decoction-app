@@ -326,3 +326,109 @@ test('overlay foreground service reuses one notification and keeps it after over
   )
   assert.doesNotMatch(serviceSource, /private const val OVERLAY_NOTIFICATION_ID = 2002/)
 })
+
+test('notification fallback path without overlay permission starts AlarmNotificationService for persistent sound and vibration', () => {
+  const receiverSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AndroidAlarmReceiver.kt'
+  )
+  const notificationServiceSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AlarmNotificationService.kt'
+  )
+  const manifestSource = readAndroidSource(
+    'android/app/src/main/AndroidManifest.xml'
+  )
+
+  assert.match(receiverSource, /if \(shouldAlertNotification\)/)
+  assert.match(receiverSource, /AlarmNotificationService\.start\(context, title, body\)/)
+  assert.match(receiverSource, /const val CHANNEL_ID_SILENT_NOTIFICATION_SERVICE = "medicine-decoction-notification-service"/)
+  assert.match(notificationServiceSource, /class AlarmNotificationService : Service/)
+  assert.match(notificationServiceSource, /startForeground/)
+  assert.match(notificationServiceSource, /AlarmSignalController/)
+  assert.match(
+    notificationServiceSource,
+    /NotificationCompat\.Builder\([\s\S]*AndroidAlarmReceiver\.CHANNEL_ID_SILENT_NOTIFICATION_SERVICE[\s\S]*\)/
+  )
+  assert.match(notificationServiceSource, /setOngoing\(true\)/)
+  assert.match(notificationServiceSource, /setAutoCancel\(false\)/)
+  assert.match(notificationServiceSource, /setOnlyAlertOnce\(true\)/)
+  assert.match(notificationServiceSource, /addAction\(0, "停止", stopPendingIntent\)/)
+  assert.match(manifestSource, /AlarmNotificationService/)
+  assert.match(manifestSource, /AlarmNotificationActionReceiver/)
+})
+
+test('notification fallback ongoing service uses a silent dedicated channel so only AlarmSignalController produces ringing', () => {
+  const receiverSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AndroidAlarmReceiver.kt'
+  )
+  const notificationServiceSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AlarmNotificationService.kt'
+  )
+
+  assert.match(receiverSource, /const val CHANNEL_ID_SILENT_NOTIFICATION_SERVICE = "medicine-decoction-notification-service"/)
+  assert.match(
+    receiverSource,
+    /val silentNotificationServiceChannel = NotificationChannel\([\s\S]*CHANNEL_ID_SILENT_NOTIFICATION_SERVICE[\s\S]*NotificationManager\.IMPORTANCE_LOW/
+  )
+  assert.match(
+    receiverSource,
+    /silentNotificationServiceChannel[\s\S]*enableVibration\(false\)[\s\S]*setSound\(null, null\)/
+  )
+  assert.match(
+    notificationServiceSource,
+    /NotificationCompat\.Builder\([\s\S]*AndroidAlarmReceiver\.CHANNEL_ID_SILENT_NOTIFICATION_SERVICE[\s\S]*\)/
+  )
+  assert.doesNotMatch(
+    notificationServiceSource,
+    /NotificationCompat\.Builder\(this, AndroidAlarmReceiver\.CHANNEL_ID\)/
+  )
+})
+
+test('AlarmAlertActivity stops AlarmNotificationService when opening the alarm page', () => {
+  const activitySource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AlarmAlertActivity.kt'
+  )
+
+  assert.match(activitySource, /AlarmNotificationService\.stop\(this\)/)
+  assert.match(
+    activitySource,
+    /override fun onNewIntent[\s\S]*AlarmNotificationService\.stop\(this\)/
+  )
+})
+
+test('cancelAlarm stops AlarmNotificationService to prevent orphaned ringing', () => {
+  const moduleSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AndroidAlarmModule.kt'
+  )
+
+  assert.match(moduleSource, /AlarmNotificationService\.stop\(reactContext\)/)
+})
+
+test('AlarmNotificationActionReceiver forwards stop action to AlarmNotificationService', () => {
+  const actionReceiverSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AlarmNotificationActionReceiver.kt'
+  )
+
+  assert.match(actionReceiverSource, /class AlarmNotificationActionReceiver : BroadcastReceiver/)
+  assert.match(actionReceiverSource, /AlarmNotificationService\.ACTION_STOP_NOTIFICATION_ALARM/)
+  assert.match(actionReceiverSource, /NotificationManagerCompat\.from\(context\)\.cancel/)
+  assert.match(actionReceiverSource, /context\.stopService/)
+})
+
+test('AlarmNotificationService stop companion does not cancel the shared notification to protect overlay path', () => {
+  const notificationServiceSource = readAndroidSource(
+    'android/app/src/main/java/com/medicinedecoction/app/AlarmNotificationService.kt'
+  )
+
+  assert.match(
+    notificationServiceSource,
+    /fun stop\(context: Context\) \{[\s\S]*context\.stopService/
+  )
+  assert.doesNotMatch(
+    notificationServiceSource,
+    /fun stop\(context: Context\) \{[\s\S]*NotificationManagerCompat/
+  )
+  assert.match(
+    notificationServiceSource,
+    /stopForeground\(STOP_FOREGROUND_REMOVE\)/
+  )
+})
